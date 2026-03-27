@@ -48,8 +48,8 @@ Usage:
   {program} [command]
 
 Commands:
-  welcome         Render the current bootstrap welcome screen
-  system-summary  Print the current bootstrap system summary
+  welcome         Render the current local welcome screen
+  system-summary  Print the current local system summary
   help            Show this help text
   version         Show package version
 "

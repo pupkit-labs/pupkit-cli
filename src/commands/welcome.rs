@@ -1,4 +1,4 @@
-use crate::collectors::system::collect_system_summary;
+use crate::collectors::system::collect_welcome_snapshot;
 use crate::render::render_welcome;
 use crate::shell;
 
@@ -7,7 +7,7 @@ pub fn execute() -> Result<(), String> {
         return Ok(());
     }
 
-    let summary = collect_system_summary();
-    print!("{}", render_welcome(&summary));
+    let snapshot = collect_welcome_snapshot();
+    print!("{}", render_welcome(&snapshot));
     Ok(())
 }
