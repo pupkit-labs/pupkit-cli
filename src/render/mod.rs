@@ -1,4 +1,5 @@
 use std::env;
+use std::io::{self, IsTerminal};
 
 use crate::model::{
     AiToolsSummary, AiUsageSummary, RateLimitWindow, ServiceEntry, SystemSummary, TokenBreakdown,
@@ -8,6 +9,9 @@ use crate::model::{
 const DEFAULT_WIDTH: usize = 100;
 const MIN_LABEL_WIDTH: usize = 4;
 const MIN_VALUE_WIDTH: usize = 16;
+const ANSI_RESET: &str = "\u{1b}[0m";
+const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;5;151m";
+const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;5;223m";
 
 struct DoubleTableLayout {
     label_width: usize,
@@ -145,54 +149,62 @@ fn render_ai_summary_table(
     let codex_last_24h = format_optional_total(usage.codex.last_24h_total_tokens);
     let codex_last_7d = format_optional_total(usage.codex.last_7d_total_tokens);
     let codex_session = format_optional_total(usage.codex.last_session_total_tokens);
-    let codex_limits = format_rate_limits(usage);
-    let mut rows = Vec::new();
+    let codex_limit_rows = format_codex_limit_rows(usage);
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
 
     if let Some(tools) = tools {
         rows.push((
-            "Model",
-            tools.claude_model.as_str(),
-            "Model",
-            tools.codex_model.as_str(),
+            "Model".to_string(),
+            tools.claude_model.clone(),
+            "Model".to_string(),
+            tools.codex_model.clone(),
         ));
     }
 
     rows.extend([
         (
-            "Source",
-            usage.claude.source_label.as_str(),
-            "Plan",
-            usage.codex.plan_type.as_str(),
+            "Source".to_string(),
+            usage.claude.source_label.clone(),
+            "Plan".to_string(),
+            usage.codex.plan_type.clone(),
         ),
         (
-            "Last Active",
-            usage.claude.last_active_at.as_str(),
-            "Last Active",
-            usage.codex.last_active_at.as_str(),
+            "Last Active".to_string(),
+            usage.claude.last_active_at.clone(),
+            "Last Active".to_string(),
+            usage.codex.last_active_at.clone(),
         ),
         (
-            "24h",
-            claude_last_24h.as_str(),
-            "24h",
-            codex_last_24h.as_str(),
-        ),
-        ("7d", claude_last_7d.as_str(), "7d", codex_last_7d.as_str()),
-        (
-            "Lifetime",
-            claude_lifetime.as_str(),
-            "Session",
-            codex_session.as_str(),
+            "24h".to_string(),
+            claude_last_24h,
+            "24h".to_string(),
+            codex_last_24h,
         ),
         (
-            "Hint",
-            usage.claude.hint.as_str(),
-            "Limits",
-            codex_limits.as_str(),
+            "7d".to_string(),
+            claude_last_7d,
+            "7d".to_string(),
+            codex_last_7d,
+        ),
+        (
+            "Lifetime".to_string(),
+            claude_lifetime,
+            "Session".to_string(),
+            codex_session,
         ),
     ]);
 
+    for (index, (codex_label, codex_value)) in codex_limit_rows.into_iter().enumerate() {
+        let (claude_label, claude_value) = if index == 0 {
+            ("Hint".to_string(), usage.claude.hint.clone())
+        } else {
+            (String::new(), String::new())
+        };
+        rows.push((claude_label, claude_value, codex_label, codex_value));
+    }
+
     let mut output =
-        render_grouped_double_box_table(title, ("Claude", "Codex"), &rows, total_width);
+        render_grouped_double_box_table_owned(title, ("Claude", "Codex"), &rows, total_width);
 
     if !usage.warnings.is_empty() {
         let warning_rows: Vec<(String, String)> = usage
@@ -219,12 +231,15 @@ fn render_double_box_table(
     let layout = match resolve_double_table_layout(rows, total_width) {
         Some(layout) => layout,
         None => {
-            let single_rows: Vec<(&str, &str)> = rows
-                .iter()
-                .flat_map(|(left_label, left_value, right_label, right_value)| {
-                    [(*left_label, *left_value), (*right_label, *right_value)]
-                })
-                .collect();
+            let mut single_rows: Vec<(&str, &str)> = Vec::new();
+            for (left_label, left_value, right_label, right_value) in rows {
+                if !is_empty_cell(left_label, left_value) {
+                    single_rows.push((*left_label, *left_value));
+                }
+                if !is_empty_cell(right_label, right_value) {
+                    single_rows.push((*right_label, *right_value));
+                }
+            }
             return render_box_table(title, &single_rows, total_width);
         }
     };
@@ -247,21 +262,21 @@ fn render_grouped_double_box_table(
     let layout = match resolve_double_table_layout(rows, total_width) {
         Some(layout) => layout,
         None => {
-            let single_rows: Vec<(String, String)> = rows
-                .iter()
-                .flat_map(|(left_label, left_value, right_label, right_value)| {
-                    [
-                        (
-                            format!("{} {}", group_headers.0, left_label),
-                            (*left_value).to_string(),
-                        ),
-                        (
-                            format!("{} {}", group_headers.1, right_label),
-                            (*right_value).to_string(),
-                        ),
-                    ]
-                })
-                .collect();
+            let mut single_rows: Vec<(String, String)> = Vec::new();
+            for (left_label, left_value, right_label, right_value) in rows {
+                if !is_empty_cell(left_label, left_value) {
+                    single_rows.push((
+                        format_grouped_label(group_headers.0, left_label),
+                        (*left_value).to_string(),
+                    ));
+                }
+                if !is_empty_cell(right_label, right_value) {
+                    single_rows.push((
+                        format_grouped_label(group_headers.1, right_label),
+                        (*right_value).to_string(),
+                    ));
+                }
+            }
             return render_box_table_owned(title, &single_rows, total_width);
         }
     };
@@ -283,6 +298,27 @@ fn render_grouped_double_box_table(
     render_double_box_rows(&mut output, rows, &layout);
     output.push('\n');
     output
+}
+
+fn render_grouped_double_box_table_owned(
+    title: &str,
+    group_headers: (&str, &str),
+    rows: &[(String, String, String, String)],
+    total_width: usize,
+) -> String {
+    let borrowed_rows: Vec<(&str, &str, &str, &str)> = rows
+        .iter()
+        .map(|(left_label, left_value, right_label, right_value)| {
+            (
+                left_label.as_str(),
+                left_value.as_str(),
+                right_label.as_str(),
+                right_value.as_str(),
+            )
+        })
+        .collect();
+
+    render_grouped_double_box_table(title, group_headers, &borrowed_rows, total_width)
 }
 
 fn render_box_table(title: &str, rows: &[(&str, &str)], total_width: usize) -> String {
@@ -315,7 +351,7 @@ fn render_box_table(title: &str, rows: &[(&str, &str)], total_width: usize) -> S
             output.push_str("│ ");
             output.push_str(&pad_visible(label_text, label_width));
             output.push_str(" │ ");
-            output.push_str(&pad_visible(value_text, value_width));
+            output.push_str(&render_value_cell(label, value_text, value_width));
             output.push_str(" │\n");
         }
 
@@ -402,11 +438,19 @@ fn render_double_box_rows(
             output.push_str("│ ");
             output.push_str(&pad_visible(left_label_text, layout.label_width));
             output.push_str(" │ ");
-            output.push_str(&pad_visible(left_value_text, layout.left_value_width));
+            output.push_str(&render_value_cell(
+                left_label,
+                left_value_text,
+                layout.left_value_width,
+            ));
             output.push_str(" │ ");
             output.push_str(&pad_visible(right_label_text, layout.label_width));
             output.push_str(" │ ");
-            output.push_str(&pad_visible(right_value_text, layout.right_value_width));
+            output.push_str(&render_value_cell(
+                right_label,
+                right_value_text,
+                layout.right_value_width,
+            ));
             output.push_str(" │\n");
         }
 
@@ -456,10 +500,12 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
-    let input = if text.trim().is_empty() { "-" } else { text };
+    if text.trim().is_empty() {
+        return vec![String::new()];
+    }
     let mut lines = Vec::new();
 
-    for raw_line in input.lines() {
+    for raw_line in text.lines() {
         if raw_line.trim().is_empty() {
             lines.push(String::new());
             continue;
@@ -514,7 +560,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     if lines.is_empty() {
-        vec!["-".to_string()]
+        vec![String::new()]
     } else {
         lines
     }
@@ -525,11 +571,18 @@ fn display_width(text: &str) -> usize {
 }
 
 fn char_display_width(character: char) -> usize {
-    if character.is_ascii() || matches!(character, '·' | '•' | '…' | '█' | '░') {
+    if character.is_ascii()
+        || matches!(character, '·' | '•' | '…' | '█' | '░')
+        || is_regional_indicator(character)
+    {
         1
     } else {
         2
     }
+}
+
+fn is_regional_indicator(character: char) -> bool {
+    matches!(u32::from(character), 0x1F1E6..=0x1F1FF)
 }
 
 fn pad_visible(text: &str, width: usize) -> String {
@@ -539,6 +592,47 @@ fn pad_visible(text: &str, width: usize) -> String {
     }
 
     format!("{text}{}", " ".repeat(width - visible))
+}
+
+fn render_value_cell(label: &str, text: &str, width: usize) -> String {
+    let padded = pad_visible(text, width);
+
+    if label != "Proxy" || !can_use_ansi_color() {
+        return padded;
+    }
+
+    let style = if text.trim_start().starts_with("已启用") {
+        Some(PROXY_ENABLED_STYLE)
+    } else if text.trim_start().starts_with("未启用") {
+        Some(PROXY_DISABLED_STYLE)
+    } else {
+        None
+    };
+
+    match style {
+        Some(style) => format!("{style}{padded}{ANSI_RESET}"),
+        None => padded,
+    }
+}
+
+fn can_use_ansi_color() -> bool {
+    io::stdout().is_terminal()
+        && env::var("TERM")
+            .map(|value| value != "dumb")
+            .unwrap_or(true)
+        && env::var_os("NO_COLOR").is_none()
+}
+
+fn format_grouped_label(group_header: &str, label: &str) -> String {
+    if label.trim().is_empty() {
+        group_header.to_string()
+    } else {
+        format!("{group_header} {label}")
+    }
+}
+
+fn is_empty_cell(label: &str, value: &str) -> bool {
+    label.trim().is_empty() && value.trim().is_empty()
 }
 
 fn format_token_breakdown(value: &TokenBreakdown) -> String {
@@ -578,27 +672,32 @@ fn format_optional_total(value: Option<u64>) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn format_rate_limits(summary: &AiUsageSummary) -> String {
-    let mut lines = Vec::new();
+fn format_codex_limit_rows(summary: &AiUsageSummary) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
 
     if let Some(context_window) = format_context_window(summary) {
-        lines.push(context_window);
+        rows.push(("Context".to_string(), context_window));
     }
 
-    if let Some(primary) = format_rate_limit_window(summary, &summary.codex.primary_rate_limit) {
-        lines.push(primary);
+    if let Some(primary) = format_rate_limit_value(summary, &summary.codex.primary_rate_limit) {
+        rows.push((
+            format_limit_label(&summary.codex.primary_rate_limit),
+            primary,
+        ));
     }
 
-    if let Some(secondary) = format_rate_limit_window(summary, &summary.codex.secondary_rate_limit)
-    {
-        lines.push(secondary);
+    if let Some(secondary) = format_rate_limit_value(summary, &summary.codex.secondary_rate_limit) {
+        rows.push((
+            format_limit_label(&summary.codex.secondary_rate_limit),
+            secondary,
+        ));
     }
 
-    if lines.is_empty() {
-        return summary.codex.hint.clone();
+    if rows.is_empty() {
+        rows.push(("Hint".to_string(), summary.codex.hint.clone()));
     }
 
-    lines.join("\n")
+    rows
 }
 
 fn format_context_window(summary: &AiUsageSummary) -> Option<String> {
@@ -609,20 +708,19 @@ fn format_context_window(summary: &AiUsageSummary) -> Option<String> {
     }
 
     Some(format!(
-        "Context window {} (session total {})",
+        "{} window (session total {})",
         format_compact_number(total_tokens),
         format_compact_number(session_total_tokens)
     ))
 }
 
-fn format_rate_limit_window(summary: &AiUsageSummary, window: &RateLimitWindow) -> Option<String> {
+fn format_rate_limit_value(summary: &AiUsageSummary, window: &RateLimitWindow) -> Option<String> {
     let used_percent = window.used_percent?;
     let remaining_percent = 100_u8.saturating_sub(used_percent);
     let reset_label = format_rate_limit_reset(&window.resets_at, &summary.codex.last_active_at);
 
     Some(format!(
-        "{} [{}] {}% left ({})",
-        format_limit_label(window),
+        "[{}] {}% left ({})",
         format_remaining_bar(remaining_percent, 10),
         remaining_percent,
         reset_label
@@ -649,18 +747,18 @@ fn format_remaining_bar(remaining_percent: u8, slots: usize) -> String {
 fn format_rate_limit_reset(resets_at: &str, last_active_at: &str) -> String {
     let Some((reset_date, reset_time)) = parse_rendered_utc_timestamp(resets_at) else {
         return if resets_at == "-" {
-            "reset unknown".to_string()
+            "resets unknown".to_string()
         } else {
-            format!("reset {resets_at}")
+            format!("resets {resets_at}")
         };
     };
     let active_date = parse_rendered_utc_timestamp(last_active_at).map(|(date, _)| date);
 
     if active_date.as_deref() == Some(reset_date.as_str()) {
-        format!("reset {reset_time} UTC")
+        format!("resets {reset_time} UTC")
     } else {
         format!(
-            "reset {} UTC on {}",
+            "resets {} UTC on {}",
             reset_time,
             format_short_date(&reset_date)
         )
