@@ -11,24 +11,27 @@ AI Usage
 │ Claude 24h         │ 225 total · in 150 · out 60 ·       │
 │                    │ cache+ 10 · cache~ 5                │
 ├────────────────────┼─────────────────────────────────────┤
-│ Codex 24h          │ 90 tokens                           │
+│ Codex 24h          │ 124,000 tokens                      │
 ├────────────────────┼─────────────────────────────────────┤
 │ Claude 7d          │ 265 total · in 180 · out 70 ·       │
 │                    │ cache+ 10 · cache~ 5                │
 ├────────────────────┼─────────────────────────────────────┤
-│ Codex 7d           │ 140 tokens                          │
+│ Codex 7d           │ 450,000 tokens                      │
 ├────────────────────┼─────────────────────────────────────┤
 │ Claude Lifetime    │ 295 total · in 200 · out 80 ·       │
 │                    │ cache+ 10 · cache~ 5                │
 ├────────────────────┼─────────────────────────────────────┤
-│ Codex Session      │ 200 tokens                          │
+│ Codex Session      │ 62,300 tokens                       │
 ├────────────────────┼─────────────────────────────────────┤
 │ Claude Hint        │ Run /usage or /stats in Claude for  │
 │                    │ plan limits                         │
 ├────────────────────┼─────────────────────────────────────┤
-│ Codex Limits       │ Primary 42% reset 2026-03-29 00:00  │
-│                    │ UTC / Secondary 12% reset           │
-│                    │ 2026-03-30 00:00 UTC                │
+│ Codex Limits       │ Context window 258K (session total  │
+│                    │ 62.3K)                              │
+│                    │ 5h limit [██████░░░░] 58% left      │
+│                    │ (reset 00:00 UTC on 29 Mar)         │
+│                    │ Weekly limit [█████████░] 88% left  │
+│                    │ (reset 00:00 UTC on 30 Mar)         │
 └────────────────────┴─────────────────────────────────────┘
 
 Warnings

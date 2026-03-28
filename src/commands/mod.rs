@@ -13,7 +13,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     match command {
         AppCommand::Welcome => welcome::execute(explicit_welcome),
         AppCommand::SystemSummary => system_summary::execute(),
-        AppCommand::AiTools => ai_tools::execute(),
+        AppCommand::AiTools => ai_tools::execute(args.get(2..).unwrap_or(&[])),
         AppCommand::AiUsage => ai_usage::execute(),
         AppCommand::Services => services::execute(),
         AppCommand::Help => {
@@ -62,7 +62,8 @@ Usage:
 Commands:
   welcome         Render the current local welcome screen
   system-summary  Print the current local system summary
-  ai-tools        Print the local Claude and Codex summary
+  ai-tools        Print the merged local Claude and Codex AI summary
+                  Use `ai-tools --skills` to print the local skills summary
   ai-usage        Print the local Claude and Codex usage summary
   services        Print the current local services summary
   help            Show this help text

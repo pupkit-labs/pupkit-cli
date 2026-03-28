@@ -185,6 +185,7 @@ fn collect_codex_usage_summary(
         plan_type,
         last_active_at: format_optional_timestamp(aggregate.latest_activity_at),
         last_session_total_tokens: aggregate.last_session_total_tokens,
+        model_context_window: aggregate.model_context_window,
         last_24h_total_tokens: if aggregate.token_records > 0 {
             Some(aggregate.last_24h_total_tokens)
         } else {
@@ -365,6 +366,15 @@ fn process_codex_jsonl_file(
             session_latest_total_at = timestamp.or(file_mtime);
         }
 
+        if let Some(model_context_window) = extract_codex_model_context_window(event) {
+            update_optional_u64(
+                &mut aggregate.model_context_window,
+                &mut aggregate.model_context_window_at,
+                timestamp,
+                model_context_window,
+            );
+        }
+
         if let Some(snapshot) = extract_rate_limit_snapshot(event, &value) {
             update_optional_snapshot(
                 &mut aggregate.primary_rate_limit,
@@ -479,6 +489,7 @@ fn extract_rate_limit_window(
     RateLimitWindow {
         label,
         used_percent: window.and_then(|value| get_u8_field(value, "used_percent")),
+        window_minutes: window.and_then(|value| get_u64_field(value, "window_minutes")),
         resets_at: window
             .and_then(|value| value.get("resets_at"))
             .and_then(format_timestamp_value)
@@ -533,6 +544,27 @@ fn extract_codex_usage_total(value: &Value, key: &str) -> Option<u64> {
             value
                 .get("payload")
                 .and_then(|payload| extract_codex_usage_total(payload, key))
+        })
+}
+
+fn extract_codex_model_context_window(value: &Value) -> Option<u64> {
+    value
+        .get("model_context_window")
+        .and_then(parse_u64_value)
+        .or_else(|| {
+            value
+                .get("info")
+                .and_then(|info| get_u64_field(info, "model_context_window"))
+        })
+        .or_else(|| {
+            value
+                .get("token_count")
+                .and_then(|token_count| extract_codex_model_context_window(token_count))
+        })
+        .or_else(|| {
+            value
+                .get("payload")
+                .and_then(extract_codex_model_context_window)
         })
 }
 
@@ -915,6 +947,7 @@ fn default_primary_rate_limit() -> RateLimitWindow {
     RateLimitWindow {
         label: PRIMARY_WINDOW_LABEL,
         used_percent: None,
+        window_minutes: None,
         resets_at: PLACEHOLDER_LABEL.to_string(),
     }
 }
@@ -923,6 +956,7 @@ fn default_secondary_rate_limit() -> RateLimitWindow {
     RateLimitWindow {
         label: SECONDARY_WINDOW_LABEL,
         used_percent: None,
+        window_minutes: None,
         resets_at: PLACEHOLDER_LABEL.to_string(),
     }
 }
@@ -945,6 +979,7 @@ fn unavailable_codex_summary() -> CodexUsageSummary {
         plan_type: UNKNOWN_PLAN_LABEL.to_string(),
         last_active_at: PLACEHOLDER_LABEL.to_string(),
         last_session_total_tokens: None,
+        model_context_window: None,
         last_24h_total_tokens: None,
         last_7d_total_tokens: None,
         primary_rate_limit: default_primary_rate_limit(),
@@ -1033,6 +1068,8 @@ struct CodexAggregate {
     latest_activity_at: Option<SystemTime>,
     last_session_total_tokens: Option<u64>,
     last_session_total_at: Option<SystemTime>,
+    model_context_window: Option<u64>,
+    model_context_window_at: Option<SystemTime>,
     last_24h_total_tokens: u64,
     last_7d_total_tokens: u64,
     primary_rate_limit: Option<RateLimitWindow>,
@@ -1253,10 +1290,16 @@ mod tests {
         assert_eq!(summary.codex.availability, UsageAvailability::Live);
         assert_eq!(summary.codex.plan_type, "plus");
         assert_eq!(summary.codex.last_session_total_tokens, Some(95_328));
+        assert_eq!(summary.codex.model_context_window, Some(258_400));
         assert_eq!(summary.codex.last_24h_total_tokens, Some(95_328));
         assert_eq!(summary.codex.last_7d_total_tokens, Some(95_328));
         assert_eq!(summary.codex.primary_rate_limit.used_percent, Some(13));
+        assert_eq!(summary.codex.primary_rate_limit.window_minutes, Some(300));
         assert_eq!(summary.codex.secondary_rate_limit.used_percent, Some(56));
+        assert_eq!(
+            summary.codex.secondary_rate_limit.window_minutes,
+            Some(10_080)
+        );
         assert!(summary.warnings.is_empty());
     }
 
