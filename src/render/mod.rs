@@ -1,6 +1,6 @@
 use std::env;
 
-use crate::model::{AiToolsSummary, SystemSummary, WelcomeSnapshot};
+use crate::model::{AiToolsSummary, ServiceEntry, SystemSummary, WelcomeSnapshot};
 
 const DEFAULT_WIDTH: usize = 100;
 const MIN_LABEL_WIDTH: usize = 4;
@@ -86,6 +86,15 @@ fn render_system_summary_with_width(summary: &SystemSummary, total_width: usize)
 
 pub fn render_ai_tools_summary(summary: &AiToolsSummary) -> String {
     render_ai_tools_summary_with_width(summary, resolve_total_width())
+}
+
+pub fn render_services(entries: &[ServiceEntry]) -> String {
+    let rows: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.detail.as_str()))
+        .collect();
+
+    render_box_table("Services", &rows, resolve_total_width())
 }
 
 fn render_ai_tools_summary_with_width(summary: &AiToolsSummary, total_width: usize) -> String {
@@ -441,10 +450,12 @@ fn pad_visible(text: &str, width: usize) -> String {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::model::{AiToolsSummary, SystemSummary, WelcomeSnapshot};
+    use crate::model::{
+        AiToolsSummary, ServiceEntry, ServiceManager, ServiceStatus, SystemSummary, WelcomeSnapshot,
+    };
 
     use super::{
-        render_ai_tools_summary_with_width, render_system_summary_with_width,
+        render_ai_tools_summary_with_width, render_services, render_system_summary_with_width,
         render_welcome_with_width,
     };
 
@@ -512,6 +523,30 @@ mod tests {
             normalize_snapshot(&output),
             normalize_snapshot(snapshot_text("ai-tools-narrow.txt"))
         );
+    }
+
+    #[test]
+    fn services_render_includes_entries() {
+        let entries = vec![
+            ServiceEntry {
+                name: "cron".to_string(),
+                manager: ServiceManager::Systemd,
+                status: ServiceStatus::Running,
+                detail: "active/running / enabled enabled".to_string(),
+            },
+            ServiceEntry {
+                name: "gpu-manager".to_string(),
+                manager: ServiceManager::Systemd,
+                status: ServiceStatus::Stopped,
+                detail: "inactive/dead / enabled enabled".to_string(),
+            },
+        ];
+
+        let output = render_services(&entries);
+        assert!(output.contains("Services"));
+        assert!(output.contains("cron"));
+        assert!(output.contains("gpu-manager"));
+        assert!(output.contains("active/running / enabled enabled"));
     }
 
     fn sample_welcome_snapshot() -> WelcomeSnapshot {

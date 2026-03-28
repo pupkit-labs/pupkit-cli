@@ -1,0 +1,62 @@
+
+ _      ___ _   _ ____  __   __    x
+| |    |_ _| | | |  _ \ \ \ / /   xx
+| |     | || | | | |_) | \ V /   xxx
+| |___  | || |_| |  __/  / _ \  xxxx
+|_____||___|\___/|_|    /_/ \_\  xxx
+Welcome back, LIUPX.
+2026-03-28 10:26  liupx@liupx-Ubuntu  ~/liupx_git_repo/pupkit-labs/pup-cli-start-rust
+
+System Summary
+┌──────────┬───────────────────────────────────────────────┐
+│ Item     │ Value                                         │
+├──────────┼───────────────────────────────────────────────┤
+│  OS      │  Ubuntu 24.04.3 LTS (x86_64)                  │
+├──────────┼───────────────────────────────────────────────┤
+│  Load    │  1分 0.25 · 5分 0.25 · 15分 0.29              │
+├──────────┼───────────────────────────────────────────────┤
+│  Host    │  liupx-Ubuntu                                 │
+├──────────┼───────────────────────────────────────────────┤
+│  Disk    │ ████░░░░░░  已用 76G / 总量 233G (35%)        │
+├──────────┼───────────────────────────────────────────────┤
+│  CPU     │  12th Gen Intel(R) Core(TM) i7-12700          │
+├──────────┼───────────────────────────────────────────────┤
+│  Shell   │  zsh 5.9                                      │
+├──────────┼───────────────────────────────────────────────┤
+│  Memory  │  5.1 GiB used / 31.0 GiB total / 25.9 GiB     │
+│          │  avail                                        │
+├──────────┼───────────────────────────────────────────────┤
+│  IP      │  United States · 149.28.91.67                 │
+├──────────┼───────────────────────────────────────────────┤
+│  Uptime  │  2:23, 1 user,                                │
+├──────────┼───────────────────────────────────────────────┤
+│  Proxy   │  已启用                                       │
+└──────────┴───────────────────────────────────────────────┘
+
+AI Tools
+┌──────────┬───────────────────────────────────────────────┐
+│ Item     │ Value                                         │
+├──────────┼───────────────────────────────────────────────┤
+│  Model   │  MiniMax-M2.5                                 │
+├──────────┼───────────────────────────────────────────────┤
+│  Model   │  gpt-5.4                                      │
+├──────────┼───────────────────────────────────────────────┤
+│  Skills  │  (none)                                       │
+├──────────┼───────────────────────────────────────────────┤
+│  Skills  │  cloudflare-deploy, develop-web-game, doc,    │
+│          │  doc-doc, figma, figma-implement-design,      │
+│          │  gh-address-comments, gh-fix-ci, imagegen,    │
+│          │  jupyter-notebook, linear,                    │
+│          │  liu-blog-formater, netlify-deploy,           │
+│          │  never-twice, notion-knowledge-capture,       │
+│          │  notion-meeting-intelligence,                 │
+│          │  notion-research-documentation,               │
+│          │  notion-spec-to-implementation, openai-docs,  │
+│          │  pdf, playwright, render-deploy, screenshot,  │
+│          │  security-best-practices,                     │
+│          │  security-ownership-map,                      │
+│          │  security-threat-model, sentry, sora,         │
+│          │  speech, spreadsheet, transcribe,             │
+│          │  vercel-deploy, yeet, zhou-tianzi             │
+└──────────┴───────────────────────────────────────────────┘
+

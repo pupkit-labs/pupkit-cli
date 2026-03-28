@@ -3,6 +3,7 @@ pub enum AppCommand {
     Welcome,
     SystemSummary,
     AiTools,
+    Services,
     Help,
     Version,
 }
