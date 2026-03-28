@@ -10,6 +10,7 @@
 - `cargo run -- welcome`
 - `cargo run -- system-summary`
 - `cargo run -- ai-tools`
+- `cargo run -- ai-usage`
 - `cargo run -- services`
 
 当前 Rust 版本已覆盖：
@@ -17,6 +18,7 @@
 - 欢迎页标题与基础终端退化判断；显式 `welcome` 子命令可在非 TTY 下渲染
 - 本地 `System Summary` 采集与盒状表格渲染，包括公网 IP 的超时查询与缓存回退
 - Claude / Codex 模型与 skills 摘要，以及 `ai-tools` 子命令
+- Claude / Codex AI 用量摘要，以及 `ai-usage` 子命令；Claude 走本地 JSONL token 聚合，Codex 走 session JSONL / rate limit / plan 类型白名单读取
 - 本地 `services` 子命令，当前已覆盖 Linux systemd / SysV 与 macOS brew 的采集分支
 - 仓库内确定性 render fixture，以及宽终端 / 窄终端 snapshot 回归
 - 参考 shell 原型的宽终端 / 窄终端 welcome 与 Linux services fixture

@@ -1,0 +1,3 @@
+{"timestamp":1799740800,"type":"token_count","token_count":{"total_token_usage":50,"last_token_usage":50}}
+{"timestamp":1799996400,"type":"token_count","token_count":{"total_token_usage":110,"last_token_usage":60}}
+{"timestamp":1799999900,"event":"token_count","token_count":{"total_token_usage":200,"last_token_usage":30,"rate_limits":{"plan_type":"pro","primary":{"used_percent":42,"resets_at":1800057600},"secondary":{"used_percent":12,"resets_at":"2026-03-30T00:00:00Z"}}}}
