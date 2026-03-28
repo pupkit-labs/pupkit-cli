@@ -30,7 +30,12 @@ const AUTH_PLAN_PATHS: &[&[&str]] = &[
     &["id_token", "claims", "chatgpt_plan_type"],
     &["tokens", "id_token", "claims", "plan_type"],
     &["tokens", "id_token", "claims", "chatgpt_plan_type"],
+    &["https://api.openai.com/auth", "plan_type"],
+    &["https://api.openai.com/auth", "chatgpt_plan_type"],
+    &["https://api.openai.com/auth", "claims", "plan_type"],
+    &["https://api.openai.com/auth", "claims", "chatgpt_plan_type"],
 ];
+const AUTH_JWT_TOKEN_PATHS: &[&[&str]] = &[&["tokens", "id_token"], &["id_token"]];
 
 pub fn collect_ai_usage_summary() -> AiUsageSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
@@ -322,16 +327,15 @@ fn process_codex_jsonl_file(
         let timestamp = extract_record_timestamp(&value).or(file_mtime);
         update_latest_time(&mut aggregate.latest_activity_at, timestamp);
 
-        if !looks_like_codex_token_event(&value) {
+        let Some(event) = codex_token_event(&value) else {
             continue;
-        }
+        };
 
         aggregate.token_records += 1;
-        let container = token_count_container(&value);
-        let current_total = get_u64_field(container, "total_token_usage")
-            .or_else(|| get_u64_field(&value, "total_token_usage"));
-        let last_token_usage = get_u64_field(container, "last_token_usage")
-            .or_else(|| get_u64_field(&value, "last_token_usage"));
+        let current_total = extract_codex_usage_total(event, "total_token_usage")
+            .or_else(|| extract_codex_usage_total(&value, "total_token_usage"));
+        let last_token_usage = extract_codex_usage_total(event, "last_token_usage")
+            .or_else(|| extract_codex_usage_total(&value, "last_token_usage"));
 
         let delta = if let Some(last_token_usage) = last_token_usage {
             last_token_usage
@@ -361,7 +365,7 @@ fn process_codex_jsonl_file(
             session_latest_total_at = timestamp.or(file_mtime);
         }
 
-        if let Some(snapshot) = extract_rate_limit_snapshot(container, &value) {
+        if let Some(snapshot) = extract_rate_limit_snapshot(event, &value) {
             update_optional_snapshot(
                 &mut aggregate.primary_rate_limit,
                 &mut aggregate.primary_rate_limit_at,
@@ -409,8 +413,15 @@ fn read_codex_auth_plan_type(path: &Path) -> AuthPlanRead {
         return AuthPlanRead::Unavailable;
     };
 
-    for path in AUTH_PLAN_PATHS {
-        if let Some(plan_type) = get_string_at_path(&value, path).and_then(normalize_plan_type) {
+    if let Some(plan_type) = find_plan_type_in_value(&value) {
+        return AuthPlanRead::Found(plan_type);
+    }
+
+    for path in AUTH_JWT_TOKEN_PATHS {
+        if let Some(plan_type) = get_string_at_path(&value, path)
+            .and_then(decode_jwt_claims)
+            .and_then(|claims| find_plan_type_in_value(&claims))
+        {
             return AuthPlanRead::Found(plan_type);
         }
     }
@@ -445,10 +456,8 @@ fn extract_claude_tokens(value: &Value) -> Option<TokenBreakdown> {
     })
 }
 
-fn extract_rate_limit_snapshot(container: &Value, value: &Value) -> Option<RateLimitSnapshot> {
-    let rate_limits = container
-        .get("rate_limits")
-        .or_else(|| value.get("rate_limits"))?;
+fn extract_rate_limit_snapshot(event: &Value, value: &Value) -> Option<RateLimitSnapshot> {
+    let rate_limits = extract_rate_limits(event).or_else(|| extract_rate_limits(value))?;
 
     Some(RateLimitSnapshot {
         plan_type: get_string_field(rate_limits, "plan_type").and_then(normalize_plan_type),
@@ -477,19 +486,74 @@ fn extract_rate_limit_window(
     }
 }
 
-fn looks_like_codex_token_event(value: &Value) -> bool {
+fn codex_token_event(value: &Value) -> Option<&Value> {
+    if looks_like_codex_token_payload(value) {
+        Some(value)
+    } else {
+        value
+            .get("payload")
+            .filter(|payload| looks_like_codex_token_payload(payload))
+    }
+}
+
+fn looks_like_codex_token_payload(value: &Value) -> bool {
     value.get("token_count").is_some_and(Value::is_object)
         || get_string_field(value, "type").is_some_and(|value| value == "token_count")
         || get_string_field(value, "event").is_some_and(|value| value == "token_count")
         || value.get("total_token_usage").is_some()
+        || value.get("last_token_usage").is_some()
         || value.get("rate_limits").is_some()
+        || value
+            .get("info")
+            .and_then(|info| info.get("total_token_usage"))
+            .is_some()
+        || value
+            .get("info")
+            .and_then(|info| info.get("last_token_usage"))
+            .is_some()
 }
 
-fn token_count_container(value: &Value) -> &Value {
+fn extract_codex_usage_total(value: &Value, key: &str) -> Option<u64> {
     value
-        .get("token_count")
-        .filter(|token_count| token_count.is_object())
-        .unwrap_or(value)
+        .get(key)
+        .and_then(parse_codex_usage_total)
+        .or_else(|| {
+            value
+                .get("token_count")
+                .and_then(|token_count| token_count.get(key))
+                .and_then(parse_codex_usage_total)
+        })
+        .or_else(|| {
+            value
+                .get("info")
+                .and_then(|info| info.get(key))
+                .and_then(parse_codex_usage_total)
+        })
+        .or_else(|| {
+            value
+                .get("payload")
+                .and_then(|payload| extract_codex_usage_total(payload, key))
+        })
+}
+
+fn parse_codex_usage_total(value: &Value) -> Option<u64> {
+    if value.is_object() {
+        get_u64_field(value, "total_tokens").or_else(|| get_u64_field(value, "total_token_usage"))
+    } else {
+        parse_u64_value(value)
+    }
+}
+
+fn extract_rate_limits(value: &Value) -> Option<&Value> {
+    value
+        .get("rate_limits")
+        .or_else(|| {
+            value
+                .get("token_count")
+                .and_then(|token_count| token_count.get("rate_limits"))
+        })
+        .or_else(|| value.get("info").and_then(|info| info.get("rate_limits")))
+        .or_else(|| value.get("payload").and_then(extract_rate_limits))
 }
 
 fn file_modified_at(path: &Path) -> Option<SystemTime> {
@@ -706,8 +770,9 @@ fn get_u64_field(value: &Value, key: &str) -> Option<u64> {
 fn get_u8_field(value: &Value, key: &str) -> Option<u8> {
     value
         .get(key)
-        .and_then(parse_u64_value)
-        .map(|value| value as u8)
+        .and_then(parse_f64_value)
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= u8::MAX as f64)
+        .map(|value| value.round() as u8)
 }
 
 fn get_string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -733,10 +798,79 @@ fn get_string_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
 
 fn parse_u64_value(value: &Value) -> Option<u64> {
     match value {
-        Value::Number(number) => number.as_u64(),
-        Value::String(string) => string.trim().parse::<u64>().ok(),
+        Value::Number(number) => number.as_u64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
+                .map(|value| value as u64)
+        }),
+        Value::String(string) => {
+            let trimmed = string.trim();
+            trimmed.parse::<u64>().ok().or_else(|| {
+                trimmed
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0)
+                    .map(|value| value as u64)
+            })
+        }
         _ => None,
     }
+}
+
+fn parse_f64_value(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(string) => string.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn find_plan_type_in_value(value: &Value) -> Option<String> {
+    AUTH_PLAN_PATHS
+        .iter()
+        .find_map(|path| get_string_at_path(value, path).and_then(normalize_plan_type))
+}
+
+fn decode_jwt_claims(token: &str) -> Option<Value> {
+    let mut segments = token.split('.');
+    let _header = segments.next()?;
+    let payload = segments.next()?;
+    let decoded = decode_base64url(payload)?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn decode_base64url(value: &str) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity((value.len() * 3) / 4 + 3);
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+
+    for byte in value.bytes() {
+        let sextet = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            b'=' => break,
+            _ if byte.is_ascii_whitespace() => continue,
+            _ => return None,
+        } as u32;
+
+        buffer = (buffer << 6) | sextet;
+        bits += 6;
+
+        while bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+
+    if bits > 0 && (buffer & ((1_u32 << bits) - 1)) != 0 {
+        return None;
+    }
+
+    Some(output)
 }
 
 fn normalize_plan_type(value: &str) -> Option<String> {
@@ -1106,6 +1240,51 @@ mod tests {
     }
 
     #[test]
+    fn reads_latest_codex_event_msg_schema() {
+        let home = TestDir::new("ai-usage-codex-event-msg");
+        home.write_file(
+            ".codex/sessions/2026/03/28/session-a.jsonl",
+            fixture_text("codex-usage/session-event-msg.jsonl"),
+        );
+
+        let now = parse_timestamp_string("2026-03-28T15:00:00Z").unwrap();
+        let summary = collect_ai_usage_summary_with_home(Some(home.path.as_path()), now);
+
+        assert_eq!(summary.codex.availability, UsageAvailability::Live);
+        assert_eq!(summary.codex.plan_type, "plus");
+        assert_eq!(summary.codex.last_session_total_tokens, Some(95_328));
+        assert_eq!(summary.codex.last_24h_total_tokens, Some(95_328));
+        assert_eq!(summary.codex.last_7d_total_tokens, Some(95_328));
+        assert_eq!(summary.codex.primary_rate_limit.used_percent, Some(13));
+        assert_eq!(summary.codex.secondary_rate_limit.used_percent, Some(56));
+        assert!(summary.warnings.is_empty());
+    }
+
+    #[test]
+    fn reads_codex_plan_type_from_jwt_id_token_claims() {
+        let home = TestDir::new("ai-usage-codex-jwt-auth");
+        home.write_file(
+            ".codex/sessions/2026/03/28/session-a.jsonl",
+            fixture_text("codex-usage/session-no-rate-limit.jsonl"),
+        );
+        home.write_file(
+            ".codex/auth.json",
+            fixture_text("codex-usage/auth-jwt-plan.json"),
+        );
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let summary = collect_ai_usage_summary_with_home(Some(home.path.as_path()), now);
+
+        assert_eq!(summary.codex.plan_type, "plus");
+        assert!(
+            !summary
+                .warnings
+                .iter()
+                .any(|warning| warning == "Codex auth plan type unavailable")
+        );
+    }
+
+    #[test]
     fn falls_back_to_unknown_when_auth_plan_type_is_not_whitelisted() {
         let home = TestDir::new("ai-usage-codex-auth");
         home.write_file(
@@ -1161,9 +1340,17 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/fixtures/codex-usage/session-no-rate-limit.jsonl"
             )),
+            "codex-usage/session-event-msg.jsonl" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/codex-usage/session-event-msg.jsonl"
+            )),
             "codex-usage/auth-unsafe.json" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/fixtures/codex-usage/auth-unsafe.json"
+            )),
+            "codex-usage/auth-jwt-plan.json" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/codex-usage/auth-jwt-plan.json"
             )),
             other => panic!("unknown fixture: {other}"),
         }
