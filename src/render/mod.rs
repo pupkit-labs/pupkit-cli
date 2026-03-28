@@ -1,6 +1,9 @@
 use std::env;
 
-use crate::model::{AiToolsSummary, ServiceEntry, SystemSummary, WelcomeSnapshot};
+use crate::model::{
+    AiToolsSummary, AiUsageSummary, RateLimitWindow, ServiceEntry, SystemSummary, TokenBreakdown,
+    WelcomeSnapshot,
+};
 
 const DEFAULT_WIDTH: usize = 100;
 const MIN_LABEL_WIDTH: usize = 4;
@@ -89,6 +92,10 @@ pub fn render_ai_tools_summary(summary: &AiToolsSummary) -> String {
     render_ai_tools_summary_with_width(summary, resolve_total_width())
 }
 
+pub fn render_ai_usage_summary(summary: &AiUsageSummary) -> String {
+    render_ai_usage_summary_with_width(summary, resolve_total_width())
+}
+
 pub fn render_services(entries: &[ServiceEntry]) -> String {
     let rows: Vec<(&str, &str)> = entries
         .iter()
@@ -115,6 +122,69 @@ fn render_ai_tools_summary_with_width(summary: &AiToolsSummary, total_width: usi
     ];
 
     render_grouped_double_box_table("AI Tools", ("Claude", "Codex"), &rows, total_width)
+}
+
+fn render_ai_usage_summary_with_width(summary: &AiUsageSummary, total_width: usize) -> String {
+    let claude_last_24h = format_token_breakdown(&summary.claude.last_24h);
+    let claude_last_7d = format_token_breakdown(&summary.claude.last_7d);
+    let claude_lifetime = format_token_breakdown(&summary.claude.lifetime);
+    let codex_last_24h = format_optional_total(summary.codex.last_24h_total_tokens);
+    let codex_last_7d = format_optional_total(summary.codex.last_7d_total_tokens);
+    let codex_session = format_optional_total(summary.codex.last_session_total_tokens);
+    let codex_limits = format_rate_limits(summary);
+
+    let rows = [
+        (
+            "Source",
+            summary.claude.source_label.as_str(),
+            "Plan",
+            summary.codex.plan_type.as_str(),
+        ),
+        (
+            "Last Active",
+            summary.claude.last_active_at.as_str(),
+            "Last Active",
+            summary.codex.last_active_at.as_str(),
+        ),
+        (
+            "24h",
+            claude_last_24h.as_str(),
+            "24h",
+            codex_last_24h.as_str(),
+        ),
+        ("7d", claude_last_7d.as_str(), "7d", codex_last_7d.as_str()),
+        (
+            "Lifetime",
+            claude_lifetime.as_str(),
+            "Session",
+            codex_session.as_str(),
+        ),
+        (
+            "Hint",
+            summary.claude.hint.as_str(),
+            "Limits",
+            codex_limits.as_str(),
+        ),
+    ];
+
+    let mut output =
+        render_grouped_double_box_table("AI Usage", ("Claude", "Codex"), &rows, total_width);
+
+    if !summary.warnings.is_empty() {
+        let warning_rows: Vec<(String, String)> = summary
+            .warnings
+            .iter()
+            .enumerate()
+            .map(|(index, warning)| (format!("{}", index + 1), warning.clone()))
+            .collect();
+        output.push_str(&render_box_table_owned(
+            "Warnings",
+            &warning_rows,
+            total_width,
+        ));
+    }
+
+    output
 }
 
 fn render_double_box_table(
@@ -447,17 +517,103 @@ fn pad_visible(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(width - visible))
 }
 
+fn format_token_breakdown(value: &TokenBreakdown) -> String {
+    if value.total_tokens == 0
+        && value.input_tokens.is_none()
+        && value.output_tokens.is_none()
+        && value.cache_creation_input_tokens.is_none()
+        && value.cache_read_input_tokens.is_none()
+    {
+        return "-".to_string();
+    }
+
+    let mut parts = vec![format!("{} total", format_number(value.total_tokens))];
+
+    if let Some(input_tokens) = value.input_tokens {
+        parts.push(format!("in {}", format_number(input_tokens)));
+    }
+    if let Some(output_tokens) = value.output_tokens {
+        parts.push(format!("out {}", format_number(output_tokens)));
+    }
+    if let Some(cache_creation_input_tokens) = value.cache_creation_input_tokens {
+        parts.push(format!(
+            "cache+ {}",
+            format_number(cache_creation_input_tokens)
+        ));
+    }
+    if let Some(cache_read_input_tokens) = value.cache_read_input_tokens {
+        parts.push(format!("cache~ {}", format_number(cache_read_input_tokens)));
+    }
+
+    parts.join(" · ")
+}
+
+fn format_optional_total(value: Option<u64>) -> String {
+    value
+        .map(|value| format!("{} tokens", format_number(value)))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_rate_limits(summary: &AiUsageSummary) -> String {
+    let primary = format_rate_limit_window(&summary.codex.primary_rate_limit);
+    let secondary = format_rate_limit_window(&summary.codex.secondary_rate_limit);
+
+    if summary.codex.primary_rate_limit.used_percent.is_none()
+        && summary.codex.primary_rate_limit.resets_at == "-"
+        && summary.codex.secondary_rate_limit.used_percent.is_none()
+        && summary.codex.secondary_rate_limit.resets_at == "-"
+    {
+        return summary.codex.hint.clone();
+    }
+
+    format!("{primary} / {secondary}")
+}
+
+fn format_rate_limit_window(window: &RateLimitWindow) -> String {
+    let mut output = window.label.to_string();
+
+    if let Some(used_percent) = window.used_percent {
+        output.push(' ');
+        output.push_str(&format!("{used_percent}%"));
+    } else {
+        output.push_str(" -");
+    }
+
+    if window.resets_at != "-" {
+        output.push_str(" reset ");
+        output.push_str(&window.resets_at);
+    }
+
+    output
+}
+
+fn format_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut output = String::new();
+
+    for (index, character) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            output.push(',');
+        }
+        output.push(character);
+    }
+
+    output.chars().rev().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use crate::model::{
-        AiToolsSummary, ServiceEntry, ServiceManager, ServiceStatus, SystemSummary, WelcomeSnapshot,
+        AiToolsSummary, AiUsageSummary, ClaudeUsageSummary, CodexUsageSummary, RateLimitWindow,
+        ServiceEntry, ServiceManager, ServiceStatus, SystemSummary, TokenBreakdown,
+        UsageAvailability, WelcomeSnapshot,
     };
 
     use super::{
-        render_ai_tools_summary_with_width, render_services, render_system_summary_with_width,
-        render_welcome_with_width,
+        render_ai_tools_summary_with_width, render_ai_usage_summary_with_width, render_services,
+        render_system_summary_with_width, render_welcome_with_width,
     };
 
     #[test]
@@ -527,6 +683,28 @@ mod tests {
     }
 
     #[test]
+    fn ai_usage_render_matches_wide_snapshot() {
+        let summary = sample_ai_usage_summary();
+        let output = render_ai_usage_summary_with_width(&summary, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-usage-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn ai_usage_render_matches_narrow_snapshot() {
+        let summary = sample_ai_usage_summary();
+        let output = render_ai_usage_summary_with_width(&summary, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-usage-narrow.txt"))
+        );
+    }
+
+    #[test]
     fn services_render_includes_entries() {
         let entries = vec![
             ServiceEntry {
@@ -583,6 +761,61 @@ mod tests {
         }
     }
 
+    fn sample_ai_usage_summary() -> AiUsageSummary {
+        AiUsageSummary {
+            claude: ClaudeUsageSummary {
+                availability: UsageAvailability::Live,
+                source_label: "local jsonl aggregate".to_string(),
+                last_active_at: "2026-03-28 11:58 UTC".to_string(),
+                last_24h: TokenBreakdown {
+                    total_tokens: 225,
+                    input_tokens: Some(150),
+                    output_tokens: Some(60),
+                    cache_creation_input_tokens: Some(10),
+                    cache_read_input_tokens: Some(5),
+                },
+                last_7d: TokenBreakdown {
+                    total_tokens: 265,
+                    input_tokens: Some(180),
+                    output_tokens: Some(70),
+                    cache_creation_input_tokens: Some(10),
+                    cache_read_input_tokens: Some(5),
+                },
+                lifetime: TokenBreakdown {
+                    total_tokens: 295,
+                    input_tokens: Some(200),
+                    output_tokens: Some(80),
+                    cache_creation_input_tokens: Some(10),
+                    cache_read_input_tokens: Some(5),
+                },
+                hint: "Run /usage or /stats in Claude for plan limits".to_string(),
+            },
+            codex: CodexUsageSummary {
+                availability: UsageAvailability::Live,
+                plan_type: "pro".to_string(),
+                last_active_at: "2026-03-28 11:59 UTC".to_string(),
+                last_session_total_tokens: Some(200),
+                last_24h_total_tokens: Some(90),
+                last_7d_total_tokens: Some(140),
+                primary_rate_limit: RateLimitWindow {
+                    label: "Primary",
+                    used_percent: Some(42),
+                    resets_at: "2026-03-29 00:00 UTC".to_string(),
+                },
+                secondary_rate_limit: RateLimitWindow {
+                    label: "Secondary",
+                    used_percent: Some(12),
+                    resets_at: "2026-03-30 00:00 UTC".to_string(),
+                },
+                hint: "Run /status in Codex for current usage".to_string(),
+            },
+            warnings: vec![
+                "Claude skipped 1 malformed line".to_string(),
+                "Codex auth plan type unavailable".to_string(),
+            ],
+        }
+    }
+
     fn fixture_map() -> HashMap<String, String> {
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -634,6 +867,14 @@ mod tests {
             "ai-tools-narrow.txt" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/snapshots/ai-tools-narrow.txt"
+            )),
+            "ai-usage-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-usage-wide.txt"
+            )),
+            "ai-usage-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-usage-narrow.txt"
             )),
             other => panic!("unknown snapshot: {other}"),
         }
