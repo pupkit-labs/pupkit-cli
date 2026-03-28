@@ -48,6 +48,7 @@ pub fn render_system_summary(summary: &SystemSummary) -> String {
 }
 
 fn render_system_summary_with_width(summary: &SystemSummary, total_width: usize) -> String {
+    let public_ip_label = summary.public_ip.display_label();
     let rows = [
         (
             "OS",
@@ -70,14 +71,14 @@ fn render_system_summary_with_width(summary: &SystemSummary, total_width: usize)
         (
             "Memory",
             summary.memory_label.as_str(),
-            "Proxy",
-            summary.proxy_label.as_str(),
+            "IP",
+            public_ip_label.as_str(),
         ),
         (
             "Uptime",
             summary.uptime_label.as_str(),
-            "Time",
-            summary.time_label.as_str(),
+            "Proxy",
+            summary.proxy_label.as_str(),
         ),
     ];
 
@@ -565,9 +566,13 @@ mod tests {
                 cpu_label: fixture_value(&fixture, "system.cpu_label"),
                 shell_label: fixture_value(&fixture, "system.shell_label"),
                 memory_label: fixture_value(&fixture, "system.memory_label"),
+                public_ip: crate::model::PublicIpSummary {
+                    address: fixture_value(&fixture, "system.public_ip.address"),
+                    country_label: fixture_value(&fixture, "system.public_ip.country_label"),
+                    source: crate::model::PublicIpSource::Cache,
+                },
                 proxy_label: fixture_value(&fixture, "system.proxy_label"),
                 uptime_label: fixture_value(&fixture, "system.uptime_label"),
-                time_label: fixture_value(&fixture, "system.time_label"),
             },
             ai_tools: AiToolsSummary {
                 claude_model: fixture_value(&fixture, "ai_tools.claude_model"),
