@@ -9,3 +9,4 @@
 - `cargo run`
 - `cargo run -- welcome`
 - `cargo run -- system-summary`
+- `cargo run -- ai-tools`

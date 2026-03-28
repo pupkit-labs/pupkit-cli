@@ -4,6 +4,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::process::Command;
 use std::time::Duration;
 
+use crate::collectors::ai_tools::collect_ai_tools_summary;
 use crate::model::{SystemSummary, WelcomeSnapshot};
 use crate::shell;
 
@@ -24,6 +25,7 @@ pub fn collect_system_summary() -> SystemSummary {
 
 pub fn collect_welcome_snapshot() -> WelcomeSnapshot {
     let system = collect_system_summary();
+    let ai_tools = collect_ai_tools_summary();
 
     WelcomeSnapshot {
         timestamp: system.time_label.clone(),
@@ -31,6 +33,7 @@ pub fn collect_welcome_snapshot() -> WelcomeSnapshot {
         host_label: system.host_label.clone(),
         current_dir: detect_current_dir(),
         system,
+        ai_tools,
     }
 }
 
