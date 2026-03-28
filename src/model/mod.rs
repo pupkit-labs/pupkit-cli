@@ -4,6 +4,7 @@ pub enum AppCommand {
     SystemSummary,
     AiTools,
     AiUsage,
+    Install,
     Services,
     Help,
     Version,
@@ -49,8 +50,54 @@ impl PublicIpSummary {
         if country_label.is_empty() {
             address.to_string()
         } else {
-            format!("{country_label} · {address}")
+            match country_flag_emoji(country_label) {
+                Some(flag) => format!("{country_label} {flag} · {address}"),
+                None => format!("{country_label} · {address}"),
+            }
         }
+    }
+}
+
+fn country_flag_emoji(country_label: &str) -> Option<String> {
+    let country_code = normalize_country_code(country_label)?;
+    let mut emoji = String::new();
+
+    for letter in country_code.chars() {
+        let base = 0x1F1E6;
+        let offset = u32::from(letter).checked_sub(u32::from('A'))?;
+        let codepoint = char::from_u32(base + offset)?;
+        emoji.push(codepoint);
+    }
+
+    Some(emoji)
+}
+
+fn normalize_country_code(country_label: &str) -> Option<String> {
+    let trimmed = country_label.trim();
+    if trimmed.len() == 2
+        && trimmed
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return Some(trimmed.to_ascii_uppercase());
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    match normalized.as_str() {
+        "united states" | "united states of america" => Some("US".to_string()),
+        "china" | "people's republic of china" => Some("CN".to_string()),
+        "japan" => Some("JP".to_string()),
+        "singapore" => Some("SG".to_string()),
+        "hong kong" => Some("HK".to_string()),
+        "taiwan" => Some("TW".to_string()),
+        "south korea" | "korea, republic of" | "republic of korea" => Some("KR".to_string()),
+        "united kingdom" | "great britain" | "britain" => Some("GB".to_string()),
+        "germany" => Some("DE".to_string()),
+        "france" => Some("FR".to_string()),
+        "canada" => Some("CA".to_string()),
+        "australia" => Some("AU".to_string()),
+        "netherlands" => Some("NL".to_string()),
+        _ => None,
     }
 }
 
@@ -151,4 +198,42 @@ pub struct WelcomeSnapshot {
     pub system: SystemSummary,
     pub ai_tools: AiToolsSummary,
     pub ai_usage: AiUsageSummary,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PublicIpSource, PublicIpSummary};
+
+    #[test]
+    fn display_label_appends_flag_for_country_name() {
+        let summary = PublicIpSummary {
+            address: "149.28.91.67".to_string(),
+            country_label: "United States".to_string(),
+            source: PublicIpSource::Cache,
+        };
+
+        assert_eq!(summary.display_label(), "United States 🇺🇸 · 149.28.91.67");
+    }
+
+    #[test]
+    fn display_label_appends_flag_for_country_code() {
+        let summary = PublicIpSummary {
+            address: "149.28.91.67".to_string(),
+            country_label: "US".to_string(),
+            source: PublicIpSource::Live,
+        };
+
+        assert_eq!(summary.display_label(), "US 🇺🇸 · 149.28.91.67");
+    }
+
+    #[test]
+    fn display_label_skips_flag_when_country_is_unknown() {
+        let summary = PublicIpSummary {
+            address: "149.28.91.67".to_string(),
+            country_label: "Unknown Region".to_string(),
+            source: PublicIpSource::Live,
+        };
+
+        assert_eq!(summary.display_label(), "Unknown Region · 149.28.91.67");
+    }
 }

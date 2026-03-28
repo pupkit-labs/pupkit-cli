@@ -1,5 +1,6 @@
 mod ai_tools;
 mod ai_usage;
+mod install;
 mod services;
 mod system_summary;
 mod welcome;
@@ -15,6 +16,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         AppCommand::SystemSummary => system_summary::execute(),
         AppCommand::AiTools => ai_tools::execute(args.get(2..).unwrap_or(&[])),
         AppCommand::AiUsage => ai_usage::execute(),
+        AppCommand::Install => install::execute(),
         AppCommand::Services => services::execute(),
         AppCommand::Help => {
             print!("{}", help_text(&program_name(&args)));
@@ -36,6 +38,7 @@ fn parse_command(args: &[String]) -> Result<AppCommand, String> {
         Some("system-summary") => Ok(AppCommand::SystemSummary),
         Some("ai-tools") => Ok(AppCommand::AiTools),
         Some("ai-usage") => Ok(AppCommand::AiUsage),
+        Some("install") => Ok(AppCommand::Install),
         Some("services") => Ok(AppCommand::Services),
         Some("help") | Some("-h") | Some("--help") => Ok(AppCommand::Help),
         Some("version") | Some("-V") | Some("--version") => Ok(AppCommand::Version),
@@ -65,6 +68,7 @@ Commands:
   ai-tools        Print the merged local Claude and Codex AI summary
                   Use `ai-tools --skills` to print the local skills summary
   ai-usage        Print the local Claude and Codex usage summary
+  install         Install `pup` into ~/.local/bin and auto-enable zsh/bash/fish
   services        Print the current local services summary
   help            Show this help text
   version         Show package version
@@ -100,6 +104,12 @@ mod tests {
     fn parses_ai_usage_command() {
         let args = vec!["pup".to_string(), "ai-usage".to_string()];
         assert_eq!(parse_command(&args).unwrap(), AppCommand::AiUsage);
+    }
+
+    #[test]
+    fn parses_install_command() {
+        let args = vec!["pup".to_string(), "install".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), AppCommand::Install);
     }
 
     #[test]

@@ -26,12 +26,13 @@ AI Usage
 │ Claude Hint        │ Run /usage or /stats in Claude for  │
 │                    │ plan limits                         │
 ├────────────────────┼─────────────────────────────────────┤
-│ Codex Limits       │ Context window 258K (session total  │
-│                    │ 62.3K)                              │
-│                    │ 5h limit [██████░░░░] 58% left      │
-│                    │ (reset 00:00 UTC on 29 Mar)         │
-│                    │ Weekly limit [█████████░] 88% left  │
-│                    │ (reset 00:00 UTC on 30 Mar)         │
+│ Codex Context      │ 258K window (session total 62.3K)   │
+├────────────────────┼─────────────────────────────────────┤
+│ Codex 5h limit     │ [██████░░░░] 58% left (resets 00:00 │
+│                    │ UTC on 29 Mar)                      │
+├────────────────────┼─────────────────────────────────────┤
+│ Codex Weekly limit │ [█████████░] 88% left (resets 00:00 │
+│                    │ UTC on 30 Mar)                      │
 └────────────────────┴─────────────────────────────────────┘
 
 Warnings
