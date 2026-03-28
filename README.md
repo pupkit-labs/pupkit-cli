@@ -10,3 +10,15 @@
 - `cargo run -- welcome`
 - `cargo run -- system-summary`
 - `cargo run -- ai-tools`
+
+当前 Rust 版本已覆盖：
+
+- 欢迎页标题与基础终端退化判断
+- 本地 `System Summary` 采集与盒状表格渲染
+- Claude / Codex 模型与 skills 摘要，以及 `ai-tools` 子命令
+
+当前仍待补齐：
+
+- 公网 IP 采集与缓存
+- 服务状态查看
+- shell 输出 fixtures 与 snapshot 回归基线
