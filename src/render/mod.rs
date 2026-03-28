@@ -40,6 +40,7 @@ fn render_welcome_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> 
     ));
     output.push_str(&render_ai_tools_summary_with_width(
         &snapshot.ai_tools,
+        &snapshot.ai_usage,
         total_width,
     ));
 
@@ -88,8 +89,12 @@ fn render_system_summary_with_width(summary: &SystemSummary, total_width: usize)
     render_double_box_table("System Summary", &rows, total_width)
 }
 
-pub fn render_ai_tools_summary(summary: &AiToolsSummary) -> String {
-    render_ai_tools_summary_with_width(summary, resolve_total_width())
+pub fn render_ai_tools_summary(summary: &AiToolsSummary, usage: &AiUsageSummary) -> String {
+    render_ai_tools_summary_with_width(summary, usage, resolve_total_width())
+}
+
+pub fn render_ai_skills_summary(summary: &AiToolsSummary) -> String {
+    render_ai_skills_summary_with_width(summary, resolve_total_width())
 }
 
 pub fn render_ai_usage_summary(summary: &AiUsageSummary) -> String {
@@ -105,46 +110,65 @@ pub fn render_services(entries: &[ServiceEntry]) -> String {
     render_box_table("Services", &rows, resolve_total_width())
 }
 
-fn render_ai_tools_summary_with_width(summary: &AiToolsSummary, total_width: usize) -> String {
-    let rows = [
-        (
-            "Model",
-            summary.claude_model.as_str(),
-            "Model",
-            summary.codex_model.as_str(),
-        ),
-        (
-            "Skills",
-            summary.claude_skills.as_str(),
-            "Skills",
-            summary.codex_skills.as_str(),
-        ),
-    ];
+fn render_ai_tools_summary_with_width(
+    summary: &AiToolsSummary,
+    usage: &AiUsageSummary,
+    total_width: usize,
+) -> String {
+    render_ai_summary_table("AI Tools", Some(summary), usage, total_width)
+}
 
-    render_grouped_double_box_table("AI Tools", ("Claude", "Codex"), &rows, total_width)
+fn render_ai_skills_summary_with_width(summary: &AiToolsSummary, total_width: usize) -> String {
+    let rows = [(
+        "Skills",
+        summary.claude_skills.as_str(),
+        "Skills",
+        summary.codex_skills.as_str(),
+    )];
+
+    render_grouped_double_box_table("AI Skills", ("Claude", "Codex"), &rows, total_width)
 }
 
 fn render_ai_usage_summary_with_width(summary: &AiUsageSummary, total_width: usize) -> String {
-    let claude_last_24h = format_token_breakdown(&summary.claude.last_24h);
-    let claude_last_7d = format_token_breakdown(&summary.claude.last_7d);
-    let claude_lifetime = format_token_breakdown(&summary.claude.lifetime);
-    let codex_last_24h = format_optional_total(summary.codex.last_24h_total_tokens);
-    let codex_last_7d = format_optional_total(summary.codex.last_7d_total_tokens);
-    let codex_session = format_optional_total(summary.codex.last_session_total_tokens);
-    let codex_limits = format_rate_limits(summary);
+    render_ai_summary_table("AI Usage", None, summary, total_width)
+}
 
-    let rows = [
+fn render_ai_summary_table(
+    title: &str,
+    tools: Option<&AiToolsSummary>,
+    usage: &AiUsageSummary,
+    total_width: usize,
+) -> String {
+    let claude_last_24h = format_token_breakdown(&usage.claude.last_24h);
+    let claude_last_7d = format_token_breakdown(&usage.claude.last_7d);
+    let claude_lifetime = format_token_breakdown(&usage.claude.lifetime);
+    let codex_last_24h = format_optional_total(usage.codex.last_24h_total_tokens);
+    let codex_last_7d = format_optional_total(usage.codex.last_7d_total_tokens);
+    let codex_session = format_optional_total(usage.codex.last_session_total_tokens);
+    let codex_limits = format_rate_limits(usage);
+    let mut rows = Vec::new();
+
+    if let Some(tools) = tools {
+        rows.push((
+            "Model",
+            tools.claude_model.as_str(),
+            "Model",
+            tools.codex_model.as_str(),
+        ));
+    }
+
+    rows.extend([
         (
             "Source",
-            summary.claude.source_label.as_str(),
+            usage.claude.source_label.as_str(),
             "Plan",
-            summary.codex.plan_type.as_str(),
+            usage.codex.plan_type.as_str(),
         ),
         (
             "Last Active",
-            summary.claude.last_active_at.as_str(),
+            usage.claude.last_active_at.as_str(),
             "Last Active",
-            summary.codex.last_active_at.as_str(),
+            usage.codex.last_active_at.as_str(),
         ),
         (
             "24h",
@@ -161,17 +185,17 @@ fn render_ai_usage_summary_with_width(summary: &AiUsageSummary, total_width: usi
         ),
         (
             "Hint",
-            summary.claude.hint.as_str(),
+            usage.claude.hint.as_str(),
             "Limits",
             codex_limits.as_str(),
         ),
-    ];
+    ]);
 
     let mut output =
-        render_grouped_double_box_table("AI Usage", ("Claude", "Codex"), &rows, total_width);
+        render_grouped_double_box_table(title, ("Claude", "Codex"), &rows, total_width);
 
-    if !summary.warnings.is_empty() {
-        let warning_rows: Vec<(String, String)> = summary
+    if !usage.warnings.is_empty() {
+        let warning_rows: Vec<(String, String)> = usage
             .warnings
             .iter()
             .enumerate()
@@ -555,36 +579,162 @@ fn format_optional_total(value: Option<u64>) -> String {
 }
 
 fn format_rate_limits(summary: &AiUsageSummary) -> String {
-    let primary = format_rate_limit_window(&summary.codex.primary_rate_limit);
-    let secondary = format_rate_limit_window(&summary.codex.secondary_rate_limit);
+    let mut lines = Vec::new();
 
-    if summary.codex.primary_rate_limit.used_percent.is_none()
-        && summary.codex.primary_rate_limit.resets_at == "-"
-        && summary.codex.secondary_rate_limit.used_percent.is_none()
-        && summary.codex.secondary_rate_limit.resets_at == "-"
+    if let Some(context_window) = format_context_window(summary) {
+        lines.push(context_window);
+    }
+
+    if let Some(primary) = format_rate_limit_window(summary, &summary.codex.primary_rate_limit) {
+        lines.push(primary);
+    }
+
+    if let Some(secondary) = format_rate_limit_window(summary, &summary.codex.secondary_rate_limit)
     {
+        lines.push(secondary);
+    }
+
+    if lines.is_empty() {
         return summary.codex.hint.clone();
     }
 
-    format!("{primary} / {secondary}")
+    lines.join("\n")
 }
 
-fn format_rate_limit_window(window: &RateLimitWindow) -> String {
-    let mut output = window.label.to_string();
+fn format_context_window(summary: &AiUsageSummary) -> Option<String> {
+    let session_total_tokens = summary.codex.last_session_total_tokens?;
+    let total_tokens = summary.codex.model_context_window?;
+    if total_tokens == 0 {
+        return None;
+    }
 
-    if let Some(used_percent) = window.used_percent {
-        output.push(' ');
-        output.push_str(&format!("{used_percent}%"));
+    Some(format!(
+        "Context window {} (session total {})",
+        format_compact_number(total_tokens),
+        format_compact_number(session_total_tokens)
+    ))
+}
+
+fn format_rate_limit_window(summary: &AiUsageSummary, window: &RateLimitWindow) -> Option<String> {
+    let used_percent = window.used_percent?;
+    let remaining_percent = 100_u8.saturating_sub(used_percent);
+    let reset_label = format_rate_limit_reset(&window.resets_at, &summary.codex.last_active_at);
+
+    Some(format!(
+        "{} [{}] {}% left ({})",
+        format_limit_label(window),
+        format_remaining_bar(remaining_percent, 10),
+        remaining_percent,
+        reset_label
+    ))
+}
+
+fn format_limit_label(window: &RateLimitWindow) -> String {
+    match window.window_minutes {
+        Some(300) => "5h limit".to_string(),
+        Some(10_080) => "Weekly limit".to_string(),
+        Some(minutes) if minutes % 1_440 == 0 => format!("{}d limit", minutes / 1_440),
+        Some(minutes) if minutes % 60 == 0 => format!("{}h limit", minutes / 60),
+        Some(minutes) => format!("{}m limit", minutes),
+        None => format!("{} limit", window.label),
+    }
+}
+
+fn format_remaining_bar(remaining_percent: u8, slots: usize) -> String {
+    let filled = (((remaining_percent as usize) * slots) + 50) / 100;
+    let filled = filled.min(slots);
+    format!("{}{}", "█".repeat(filled), "░".repeat(slots - filled))
+}
+
+fn format_rate_limit_reset(resets_at: &str, last_active_at: &str) -> String {
+    let Some((reset_date, reset_time)) = parse_rendered_utc_timestamp(resets_at) else {
+        return if resets_at == "-" {
+            "reset unknown".to_string()
+        } else {
+            format!("reset {resets_at}")
+        };
+    };
+    let active_date = parse_rendered_utc_timestamp(last_active_at).map(|(date, _)| date);
+
+    if active_date.as_deref() == Some(reset_date.as_str()) {
+        format!("reset {reset_time} UTC")
     } else {
-        output.push_str(" -");
+        format!(
+            "reset {} UTC on {}",
+            reset_time,
+            format_short_date(&reset_date)
+        )
+    }
+}
+
+fn parse_rendered_utc_timestamp(value: &str) -> Option<(String, String)> {
+    let trimmed = value.trim();
+    let stripped = trimmed.strip_suffix(" UTC")?;
+    let (date, time) = stripped.split_once(' ')?;
+    Some((date.to_string(), time.to_string()))
+}
+
+fn format_short_date(date: &str) -> String {
+    let mut parts = date.split('-');
+    let Some(_year) = parts.next() else {
+        return date.to_string();
+    };
+    let Some(month) = parts.next() else {
+        return date.to_string();
+    };
+    let Some(day) = parts.next() else {
+        return date.to_string();
+    };
+    let month = match month {
+        "01" => "Jan",
+        "02" => "Feb",
+        "03" => "Mar",
+        "04" => "Apr",
+        "05" => "May",
+        "06" => "Jun",
+        "07" => "Jul",
+        "08" => "Aug",
+        "09" => "Sep",
+        "10" => "Oct",
+        "11" => "Nov",
+        "12" => "Dec",
+        _ => return date.to_string(),
+    };
+    let day = day.trim_start_matches('0');
+    format!("{day} {month}")
+}
+
+fn format_compact_number(value: u64) -> String {
+    const UNITS: [(&str, f64); 4] = [
+        ("B", 1_000_000_000.0),
+        ("M", 1_000_000.0),
+        ("K", 1_000.0),
+        ("", 1.0),
+    ];
+
+    for (suffix, divisor) in UNITS {
+        if value as f64 >= divisor {
+            if suffix.is_empty() {
+                return format_number(value);
+            }
+
+            let number = value as f64 / divisor;
+            let formatted = if number >= 100.0 {
+                format!("{number:.0}")
+            } else if number >= 10.0 {
+                format!("{number:.1}")
+            } else {
+                format!("{number:.2}")
+            };
+            return format!(
+                "{}{}",
+                formatted.trim_end_matches('0').trim_end_matches('.'),
+                suffix
+            );
+        }
     }
 
-    if window.resets_at != "-" {
-        output.push_str(" reset ");
-        output.push_str(&window.resets_at);
-    }
-
-    output
+    format_number(value)
 }
 
 fn format_number(value: u64) -> String {
@@ -612,8 +762,9 @@ mod tests {
     };
 
     use super::{
-        render_ai_tools_summary_with_width, render_ai_usage_summary_with_width, render_services,
-        render_system_summary_with_width, render_welcome_with_width,
+        render_ai_skills_summary_with_width, render_ai_tools_summary_with_width,
+        render_ai_usage_summary_with_width, render_services, render_system_summary_with_width,
+        render_welcome_with_width,
     };
 
     #[test]
@@ -663,7 +814,8 @@ mod tests {
     #[test]
     fn ai_tools_render_matches_wide_snapshot() {
         let snapshot = sample_welcome_snapshot();
-        let output = render_ai_tools_summary_with_width(&snapshot.ai_tools, 100);
+        let output =
+            render_ai_tools_summary_with_width(&snapshot.ai_tools, &snapshot.ai_usage, 100);
 
         assert_eq!(
             normalize_snapshot(&output),
@@ -674,11 +826,33 @@ mod tests {
     #[test]
     fn ai_tools_render_matches_narrow_snapshot() {
         let snapshot = sample_welcome_snapshot();
-        let output = render_ai_tools_summary_with_width(&snapshot.ai_tools, 60);
+        let output = render_ai_tools_summary_with_width(&snapshot.ai_tools, &snapshot.ai_usage, 60);
 
         assert_eq!(
             normalize_snapshot(&output),
             normalize_snapshot(snapshot_text("ai-tools-narrow.txt"))
+        );
+    }
+
+    #[test]
+    fn ai_skills_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_ai_skills_summary_with_width(&snapshot.ai_tools, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-skills-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn ai_skills_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_ai_skills_summary_with_width(&snapshot.ai_tools, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-skills-narrow.txt"))
         );
     }
 
@@ -758,6 +932,11 @@ mod tests {
                 codex_model: fixture_value(&fixture, "ai_tools.codex_model"),
                 codex_skills: fixture_value(&fixture, "ai_tools.codex_skills"),
             },
+            ai_usage: {
+                let mut summary = sample_ai_usage_summary();
+                summary.warnings.clear();
+                summary
+            },
         }
     }
 
@@ -794,17 +973,20 @@ mod tests {
                 availability: UsageAvailability::Live,
                 plan_type: "pro".to_string(),
                 last_active_at: "2026-03-28 11:59 UTC".to_string(),
-                last_session_total_tokens: Some(200),
-                last_24h_total_tokens: Some(90),
-                last_7d_total_tokens: Some(140),
+                last_session_total_tokens: Some(62_300),
+                model_context_window: Some(258_400),
+                last_24h_total_tokens: Some(124_000),
+                last_7d_total_tokens: Some(450_000),
                 primary_rate_limit: RateLimitWindow {
                     label: "Primary",
                     used_percent: Some(42),
+                    window_minutes: Some(300),
                     resets_at: "2026-03-29 00:00 UTC".to_string(),
                 },
                 secondary_rate_limit: RateLimitWindow {
                     label: "Secondary",
                     used_percent: Some(12),
+                    window_minutes: Some(10_080),
                     resets_at: "2026-03-30 00:00 UTC".to_string(),
                 },
                 hint: "Run /status in Codex for current usage".to_string(),
@@ -867,6 +1049,14 @@ mod tests {
             "ai-tools-narrow.txt" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/snapshots/ai-tools-narrow.txt"
+            )),
+            "ai-skills-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-skills-wide.txt"
+            )),
+            "ai-skills-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-skills-narrow.txt"
             )),
             "ai-usage-wide.txt" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),

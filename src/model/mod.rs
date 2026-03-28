@@ -86,6 +86,7 @@ pub struct CodexUsageSummary {
     pub plan_type: String,
     pub last_active_at: String,
     pub last_session_total_tokens: Option<u64>,
+    pub model_context_window: Option<u64>,
     pub last_24h_total_tokens: Option<u64>,
     pub last_7d_total_tokens: Option<u64>,
     pub primary_rate_limit: RateLimitWindow,
@@ -106,6 +107,7 @@ pub struct TokenBreakdown {
 pub struct RateLimitWindow {
     pub label: &'static str,
     pub used_percent: Option<u8>,
+    pub window_minutes: Option<u64>,
     pub resets_at: String,
 }
 
@@ -148,4 +150,5 @@ pub struct WelcomeSnapshot {
     pub current_dir: String,
     pub system: SystemSummary,
     pub ai_tools: AiToolsSummary,
+    pub ai_usage: AiUsageSummary,
 }
