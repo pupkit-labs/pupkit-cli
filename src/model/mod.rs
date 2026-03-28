@@ -17,9 +17,9 @@ pub struct SystemSummary {
     pub cpu_label: String,
     pub shell_label: String,
     pub memory_label: String,
+    pub public_ip: PublicIpSummary,
     pub proxy_label: String,
     pub uptime_label: String,
-    pub time_label: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +35,22 @@ pub enum PublicIpSource {
     Cache,
     Disabled,
     Unavailable,
+}
+
+impl PublicIpSummary {
+    pub fn display_label(&self) -> String {
+        let address = self.address.trim();
+        if address.is_empty() || address == "-" {
+            return "-".to_string();
+        }
+
+        let country_label = self.country_label.trim();
+        if country_label.is_empty() {
+            address.to_string()
+        } else {
+            format!("{country_label} · {address}")
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
