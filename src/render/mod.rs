@@ -14,6 +14,10 @@ struct DoubleTableLayout {
 }
 
 pub fn render_welcome(snapshot: &WelcomeSnapshot) -> String {
+    render_welcome_with_width(snapshot, resolve_total_width())
+}
+
+fn render_welcome_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
     let mut output = String::new();
 
     output.push('\n');
@@ -27,13 +31,23 @@ pub fn render_welcome(snapshot: &WelcomeSnapshot) -> String {
         "{}  {}@{}  {}\n\n",
         snapshot.timestamp, snapshot.user_label, snapshot.host_label, snapshot.current_dir
     ));
-    output.push_str(&render_system_summary(&snapshot.system));
-    output.push_str(&render_ai_tools_summary(&snapshot.ai_tools));
+    output.push_str(&render_system_summary_with_width(
+        &snapshot.system,
+        total_width,
+    ));
+    output.push_str(&render_ai_tools_summary_with_width(
+        &snapshot.ai_tools,
+        total_width,
+    ));
 
     output
 }
 
 pub fn render_system_summary(summary: &SystemSummary) -> String {
+    render_system_summary_with_width(summary, resolve_total_width())
+}
+
+fn render_system_summary_with_width(summary: &SystemSummary, total_width: usize) -> String {
     let rows = [
         (
             "OS",
@@ -67,10 +81,14 @@ pub fn render_system_summary(summary: &SystemSummary) -> String {
         ),
     ];
 
-    render_double_box_table("System Summary", &rows)
+    render_double_box_table("System Summary", &rows, total_width)
 }
 
 pub fn render_ai_tools_summary(summary: &AiToolsSummary) -> String {
+    render_ai_tools_summary_with_width(summary, resolve_total_width())
+}
+
+fn render_ai_tools_summary_with_width(summary: &AiToolsSummary, total_width: usize) -> String {
     let rows = [
         (
             "Model",
@@ -86,11 +104,15 @@ pub fn render_ai_tools_summary(summary: &AiToolsSummary) -> String {
         ),
     ];
 
-    render_grouped_double_box_table("AI Tools", ("Claude", "Codex"), &rows)
+    render_grouped_double_box_table("AI Tools", ("Claude", "Codex"), &rows, total_width)
 }
 
-fn render_double_box_table(title: &str, rows: &[(&str, &str, &str, &str)]) -> String {
-    let layout = match resolve_double_table_layout(rows) {
+fn render_double_box_table(
+    title: &str,
+    rows: &[(&str, &str, &str, &str)],
+    total_width: usize,
+) -> String {
+    let layout = match resolve_double_table_layout(rows, total_width) {
         Some(layout) => layout,
         None => {
             let single_rows: Vec<(&str, &str)> = rows
@@ -99,7 +121,7 @@ fn render_double_box_table(title: &str, rows: &[(&str, &str, &str, &str)]) -> St
                     [(*left_label, *left_value), (*right_label, *right_value)]
                 })
                 .collect();
-            return render_box_table(title, &single_rows);
+            return render_box_table(title, &single_rows, total_width);
         }
     };
     let mut output = String::new();
@@ -116,8 +138,9 @@ fn render_grouped_double_box_table(
     title: &str,
     group_headers: (&str, &str),
     rows: &[(&str, &str, &str, &str)],
+    total_width: usize,
 ) -> String {
-    let layout = match resolve_double_table_layout(rows) {
+    let layout = match resolve_double_table_layout(rows, total_width) {
         Some(layout) => layout,
         None => {
             let single_rows: Vec<(String, String)> = rows
@@ -135,7 +158,7 @@ fn render_grouped_double_box_table(
                     ]
                 })
                 .collect();
-            return render_box_table_owned(title, &single_rows);
+            return render_box_table_owned(title, &single_rows, total_width);
         }
     };
     let grouped_border_widths = [
@@ -158,11 +181,7 @@ fn render_grouped_double_box_table(
     output
 }
 
-fn render_box_table(title: &str, rows: &[(&str, &str)]) -> String {
-    let total_width = env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_WIDTH);
+fn render_box_table(title: &str, rows: &[(&str, &str)], total_width: usize) -> String {
     let label_width = rows
         .iter()
         .map(|(label, _)| display_width(label))
@@ -208,20 +227,25 @@ fn render_box_table(title: &str, rows: &[(&str, &str)]) -> String {
     output
 }
 
-fn render_box_table_owned(title: &str, rows: &[(String, String)]) -> String {
+fn render_box_table_owned(title: &str, rows: &[(String, String)], total_width: usize) -> String {
     let borrowed_rows: Vec<(&str, &str)> = rows
         .iter()
         .map(|(label, value)| (label.as_str(), value.as_str()))
         .collect();
-    render_box_table(title, &borrowed_rows)
+    render_box_table(title, &borrowed_rows, total_width)
 }
 
-fn resolve_double_table_layout(rows: &[(&str, &str, &str, &str)]) -> Option<DoubleTableLayout> {
-    let total_width = env::var("COLUMNS")
+fn resolve_total_width() -> usize {
+    env::var("COLUMNS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_WIDTH);
+        .unwrap_or(DEFAULT_WIDTH)
+}
 
+fn resolve_double_table_layout(
+    rows: &[(&str, &str, &str, &str)],
+    total_width: usize,
+) -> Option<DoubleTableLayout> {
     let label_width = rows
         .iter()
         .flat_map(|(left_label, _, right_label, _)| [*left_label, *right_label])
@@ -415,81 +439,167 @@ fn pad_visible(text: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::model::{AiToolsSummary, SystemSummary, WelcomeSnapshot};
 
-    use super::{render_ai_tools_summary, render_system_summary, render_welcome};
+    use super::{
+        render_ai_tools_summary_with_width, render_system_summary_with_width,
+        render_welcome_with_width,
+    };
 
     #[test]
-    fn welcome_render_includes_core_fields() {
-        let summary = SystemSummary {
-            os_label: "macOS 15.0 (arm64)".to_string(),
-            load_label: "1分 1.20 · 5分 1.10 · 15分 1.00".to_string(),
-            host_label: "liupx-host".to_string(),
-            disk_label: "█████░░░░░ 已用 120Gi / 总量 245Gi (49%)".to_string(),
-            cpu_label: "Apple Silicon (arm64)".to_string(),
-            shell_label: "zsh 5.9".to_string(),
-            memory_label: "12.0 GiB used / 24.0 GiB total / 12.0 GiB avail".to_string(),
-            proxy_label: "未启用".to_string(),
-            uptime_label: "5 days, 3:01".to_string(),
-            time_label: "2026-03-27 18:10".to_string(),
-        };
-        let snapshot = WelcomeSnapshot {
-            timestamp: "2026-03-27 18:10".to_string(),
-            user_label: "liupx".to_string(),
-            host_label: "liupx-host".to_string(),
-            current_dir: "~/git/pup-cli-start-rust".to_string(),
-            system: summary,
-            ai_tools: AiToolsSummary {
-                claude_model: "claude-sonnet-4-6".to_string(),
-                claude_skills: "(none)".to_string(),
-                codex_model: "gpt-5.4".to_string(),
-                codex_skills: "openai-docs".to_string(),
+    fn welcome_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_welcome_with_width(&snapshot, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn welcome_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_welcome_with_width(&snapshot, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-narrow.txt"))
+        );
+    }
+
+    #[test]
+    fn system_summary_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_system_summary_with_width(&snapshot.system, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("system-summary-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn system_summary_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_system_summary_with_width(&snapshot.system, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("system-summary-narrow.txt"))
+        );
+    }
+
+    #[test]
+    fn ai_tools_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_ai_tools_summary_with_width(&snapshot.ai_tools, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-tools-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn ai_tools_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_ai_tools_summary_with_width(&snapshot.ai_tools, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("ai-tools-narrow.txt"))
+        );
+    }
+
+    fn sample_welcome_snapshot() -> WelcomeSnapshot {
+        let fixture = fixture_map();
+
+        WelcomeSnapshot {
+            timestamp: fixture_value(&fixture, "timestamp"),
+            user_label: fixture_value(&fixture, "user_label"),
+            host_label: fixture_value(&fixture, "host_label"),
+            current_dir: fixture_value(&fixture, "current_dir"),
+            system: SystemSummary {
+                os_label: fixture_value(&fixture, "system.os_label"),
+                load_label: fixture_value(&fixture, "system.load_label"),
+                host_label: fixture_value(&fixture, "system.host_label"),
+                disk_label: fixture_value(&fixture, "system.disk_label"),
+                cpu_label: fixture_value(&fixture, "system.cpu_label"),
+                shell_label: fixture_value(&fixture, "system.shell_label"),
+                memory_label: fixture_value(&fixture, "system.memory_label"),
+                proxy_label: fixture_value(&fixture, "system.proxy_label"),
+                uptime_label: fixture_value(&fixture, "system.uptime_label"),
+                time_label: fixture_value(&fixture, "system.time_label"),
             },
-        };
-
-        let output = render_welcome(&snapshot);
-        assert!(output.contains("Welcome back, liupx."));
-        assert!(output.contains("liupx-host"));
-        assert!(output.contains("System Summary"));
-        assert!(output.contains("AI Tools"));
+            ai_tools: AiToolsSummary {
+                claude_model: fixture_value(&fixture, "ai_tools.claude_model"),
+                claude_skills: fixture_value(&fixture, "ai_tools.claude_skills"),
+                codex_model: fixture_value(&fixture, "ai_tools.codex_model"),
+                codex_skills: fixture_value(&fixture, "ai_tools.codex_skills"),
+            },
+        }
     }
 
-    #[test]
-    fn system_summary_render_includes_expected_labels() {
-        let summary = SystemSummary {
-            os_label: "macOS 15.0 (arm64)".to_string(),
-            load_label: "1分 1.20 · 5分 1.10 · 15分 1.00".to_string(),
-            host_label: "liupx-host".to_string(),
-            disk_label: "█████░░░░░ 已用 120Gi / 总量 245Gi (49%)".to_string(),
-            cpu_label: "Apple Silicon (arm64)".to_string(),
-            shell_label: "zsh 5.9".to_string(),
-            memory_label: "12.0 GiB used / 24.0 GiB total / 12.0 GiB avail".to_string(),
-            proxy_label: "未启用".to_string(),
-            uptime_label: "5 days, 3:01".to_string(),
-            time_label: "2026-03-27 18:10".to_string(),
-        };
+    fn fixture_map() -> HashMap<String, String> {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/render-sample.txt"
+        ))
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
 
-        let output = render_system_summary(&summary);
-        assert!(output.contains("OS"));
-        assert!(output.contains("Disk"));
-        assert!(output.contains("Time"));
-        assert!(output.contains("liupx-host"));
+            trimmed
+                .split_once('=')
+                .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
     }
 
-    #[test]
-    fn ai_tools_render_includes_group_headers_and_values() {
-        let summary = AiToolsSummary {
-            claude_model: "claude-sonnet-4-6".to_string(),
-            claude_skills: "refactor, review".to_string(),
-            codex_model: "gpt-5.4".to_string(),
-            codex_skills: "openai-docs".to_string(),
-        };
+    fn fixture_value(fixture: &HashMap<String, String>, key: &str) -> String {
+        fixture
+            .get(key)
+            .unwrap_or_else(|| panic!("missing fixture key: {key}"))
+            .clone()
+    }
 
-        let output = render_ai_tools_summary(&summary);
-        assert!(output.contains("AI Tools"));
-        assert!(output.contains("Claude"));
-        assert!(output.contains("Codex"));
-        assert!(output.contains("refactor, review"));
-        assert!(output.contains("openai-docs"));
+    fn snapshot_text(name: &str) -> &'static str {
+        match name {
+            "welcome-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-wide.txt"
+            )),
+            "welcome-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-narrow.txt"
+            )),
+            "system-summary-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/system-summary-wide.txt"
+            )),
+            "system-summary-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/system-summary-narrow.txt"
+            )),
+            "ai-tools-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-tools-wide.txt"
+            )),
+            "ai-tools-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/ai-tools-narrow.txt"
+            )),
+            other => panic!("unknown snapshot: {other}"),
+        }
+    }
+
+    fn normalize_snapshot(text: &str) -> &str {
+        text.trim_end_matches('\n')
     }
 }

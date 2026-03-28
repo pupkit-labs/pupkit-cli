@@ -5,8 +5,11 @@ mod welcome;
 use crate::model::AppCommand;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    match parse_command(&args)? {
-        AppCommand::Welcome => welcome::execute(),
+    let command = parse_command(&args)?;
+    let explicit_welcome = matches!(args.get(1).map(String::as_str), Some("welcome"));
+
+    match command {
+        AppCommand::Welcome => welcome::execute(explicit_welcome),
         AppCommand::SystemSummary => system_summary::execute(),
         AppCommand::AiTools => ai_tools::execute(),
         AppCommand::Help => {

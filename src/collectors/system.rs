@@ -8,6 +8,16 @@ use crate::collectors::ai_tools::collect_ai_tools_summary;
 use crate::model::{SystemSummary, WelcomeSnapshot};
 use crate::shell;
 
+const PROXY_TUN_ADDR_ENV: &str = "PUP_PROXY_TUN_ADDR";
+const PROXY_ENV_KEYS: [&str; 6] = [
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+];
+
 pub fn collect_system_summary() -> SystemSummary {
     SystemSummary {
         os_label: detect_os_label(),
@@ -181,32 +191,48 @@ fn detect_disk_label() -> String {
 }
 
 fn detect_proxy_label() -> String {
-    let address: SocketAddr = match "127.0.0.1:7892".parse() {
-        Ok(value) => value,
-        Err(_) => return "未启用".to_string(),
-    };
+    let tun_enabled = configured_proxy_tun_addr()
+        .map(|address| is_tun_proxy_available(&address))
+        .unwrap_or(false);
 
-    if TcpStream::connect_timeout(&address, Duration::from_millis(120)).is_ok() {
+    classify_proxy_label(tun_enabled, active_proxy_env().as_deref())
+}
+
+fn configured_proxy_tun_addr() -> Option<SocketAddr> {
+    env::var(PROXY_TUN_ADDR_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse().ok())
+}
+
+fn is_tun_proxy_available(address: &SocketAddr) -> bool {
+    TcpStream::connect_timeout(address, Duration::from_millis(120)).is_ok()
+}
+
+fn active_proxy_env() -> Option<String> {
+    PROXY_ENV_KEYS
+        .iter()
+        .find_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| is_enabled_proxy_value(value))
+}
+
+fn classify_proxy_label(tun_enabled: bool, proxy_env: Option<&str>) -> String {
+    if tun_enabled {
         return "已启用 (TUN)".to_string();
     }
 
-    let proxy = [
-        "http_proxy",
-        "HTTP_PROXY",
-        "https_proxy",
-        "HTTPS_PROXY",
-        "all_proxy",
-        "ALL_PROXY",
-    ]
-    .iter()
-    .find_map(|key| env::var(key).ok())
-    .unwrap_or_default();
-
-    if proxy.is_empty() || proxy == "off" || proxy == "none" {
-        "未启用".to_string()
+    if proxy_env.is_some_and(is_enabled_proxy_value) {
+        "已启用 (ENV)".to_string()
     } else {
-        "已启用".to_string()
+        "未启用".to_string()
     }
+}
+
+fn is_enabled_proxy_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    !normalized.is_empty() && normalized != "off" && normalized != "none"
 }
 
 fn detect_time_label() -> String {
@@ -366,5 +392,40 @@ fn run_command(command: &str, args: &[&str]) -> Option<String> {
         None
     } else {
         Some(text.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_proxy_label, is_enabled_proxy_value, parse_meminfo_kib};
+
+    #[test]
+    fn proxy_env_values_ignore_disabled_markers() {
+        assert!(is_enabled_proxy_value("http://127.0.0.1:7890"));
+        assert!(!is_enabled_proxy_value(""));
+        assert!(!is_enabled_proxy_value(" off "));
+        assert!(!is_enabled_proxy_value("NONE"));
+    }
+
+    #[test]
+    fn proxy_label_prefers_tun_over_environment_proxy() {
+        assert_eq!(
+            classify_proxy_label(true, Some("http://127.0.0.1:7890")),
+            "已启用 (TUN)"
+        );
+        assert_eq!(
+            classify_proxy_label(false, Some("http://127.0.0.1:7890")),
+            "已启用 (ENV)"
+        );
+        assert_eq!(classify_proxy_label(false, None), "未启用");
+    }
+
+    #[test]
+    fn meminfo_parser_extracts_requested_key() {
+        let content = "MemTotal:       32768000 kB\nMemAvailable:   16384000 kB\n";
+
+        assert_eq!(parse_meminfo_kib(content, "MemTotal"), Some(32_768_000));
+        assert_eq!(parse_meminfo_kib(content, "MemAvailable"), Some(16_384_000));
+        assert_eq!(parse_meminfo_kib(content, "SwapTotal"), None);
     }
 }
