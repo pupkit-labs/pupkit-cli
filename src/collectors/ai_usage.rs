@@ -70,23 +70,36 @@ fn collect_claude_usage_summary(
 
     let mut aggregate = ClaudeAggregate::default();
 
-    let Ok(entries) = fs::read_dir(&projects_dir) else {
-        return unavailable_claude_summary();
-    };
+    let mut pending = vec![projects_dir.clone()];
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !is_jsonl_path(&path) {
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
             continue;
-        }
+        };
 
-        aggregate.has_jsonl_files = true;
-        let file_mtime = file_modified_at(&path);
-        update_latest_time(&mut aggregate.latest_activity_at, file_mtime);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
 
-        if let Err(error) = process_claude_jsonl_file(&path, file_mtime, now, &mut aggregate) {
-            if error.count_as_unreadable_file {
-                aggregate.unreadable_files += 1;
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+
+            if !is_jsonl_path(&path) {
+                continue;
+            }
+
+            aggregate.has_jsonl_files = true;
+            let file_mtime = file_modified_at(&path);
+            update_latest_time(&mut aggregate.latest_activity_at, file_mtime);
+
+            if let Err(error) = process_claude_jsonl_file(&path, file_mtime, now, &mut aggregate) {
+                if error.count_as_unreadable_file {
+                    aggregate.unreadable_files += 1;
+                }
             }
         }
     }
@@ -440,7 +453,11 @@ fn read_codex_auth_plan_type(path: &Path) -> AuthPlanRead {
 }
 
 fn extract_claude_tokens(value: &Value) -> Option<TokenBreakdown> {
-    let usage = value.get("usage")?;
+    // Try new format (message.usage) first, then fall back to legacy format (usage)
+    let usage = value
+        .get("message")
+        .and_then(|m| m.get("usage"))
+        .or_else(|| value.get("usage"))?;
     let input_tokens = get_u64_field(usage, "input_tokens");
     let output_tokens = get_u64_field(usage, "output_tokens");
     let cache_creation_input_tokens = get_u64_field(usage, "cache_creation_input_tokens");
