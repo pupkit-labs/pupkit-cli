@@ -1,0 +1,57 @@
+{
+  "login": "pengxu-liu_nioer",
+  "access_type_sku": "copilot_for_business_seat_quota",
+  "analytics_tracking_id": "75e917a70d69809b7910e4fbfac83840",
+  "assigned_date": "2026-03-30T15:55:39+08:00",
+  "can_signup_for_limited": false,
+  "chat_enabled": true,
+  "copilotignore_enabled": false,
+  "copilot_plan": "business",
+  "is_mcp_enabled": true,
+  "organization_login_list": [],
+  "organization_list": [],
+  "restricted_telemetry": false,
+  "endpoints": {
+    "api": "https://api.business.githubcopilot.com",
+    "origin-tracker": "https://origin-tracker.business.githubcopilot.com",
+    "proxy": "https://proxy.business.githubcopilot.com",
+    "telemetry": "https://telemetry.business.githubcopilot.com"
+  },
+  "quota_reset_date": "2026-05-01",
+  "quota_snapshots": {
+    "chat": {
+      "entitlement": 0,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "percent_remaining": 100,
+      "quota_id": "chat",
+      "quota_remaining": 0,
+      "remaining": 0,
+      "unlimited": true,
+      "timestamp_utc": "2026-04-03T06:58:58.617Z"
+    },
+    "completions": {
+      "entitlement": 0,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "percent_remaining": 100,
+      "quota_id": "completions",
+      "quota_remaining": 0,
+      "remaining": 0,
+      "unlimited": true,
+      "timestamp_utc": "2026-04-03T06:58:58.617Z"
+    },
+    "premium_interactions": {
+      "entitlement": 300,
+      "overage_count": 0,
+      "overage_permitted": false,
+      "percent_remaining": 95.6,
+      "quota_id": "premium_interactions",
+      "quota_remaining": 287,
+      "remaining": 287,
+      "unlimited": false,
+      "timestamp_utc": "2026-04-03T06:58:58.617Z"
+    }
+  },
+  "quota_reset_date_utc": "2026-05-01T00:00:00.000Z"
+}

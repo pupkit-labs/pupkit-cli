@@ -2,21 +2,37 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::model::{CopilotUsageSummary, UsageAvailability};
+use crate::model::{CopilotQuotaEntry, CopilotQuotaInfo, CopilotUsageSummary, UsageAvailability};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const HINT: &str = "Run /usage in Copilot CLI for quota details";
 const DAY_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 const EVENT_TURN_START: &str = "assistant.turn_start";
 const EVENT_MESSAGE: &str = "assistant.message";
+const DEFAULT_API_PORT: u16 = 1414;
+const API_TIMEOUT_SECS: &str = "5";
+const API_CONNECT_TIMEOUT_SECS: &str = "2";
 
 pub fn collect_copilot_usage_summary() -> CopilotUsageSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
-    collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now())
+    let mut summary =
+        collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now());
+
+    let quota = fetch_copilot_api_quota(&mut default_runner);
+    if let Some(ref q) = quota {
+        summary.plan_type = q.plan.clone();
+        summary.availability = match summary.availability {
+            UsageAvailability::Unavailable => UsageAvailability::Partial,
+            other => other,
+        };
+    }
+    summary.quota = quota;
+    summary
 }
 
 fn collect_copilot_usage_summary_with_home(
@@ -73,6 +89,7 @@ fn collect_copilot_usage_summary_with_home(
         },
         remaining_percent: None,
         hint: HINT.to_string(),
+        quota: None,
     }
 }
 
@@ -249,7 +266,102 @@ fn unavailable_summary() -> CopilotUsageSummary {
         total_sessions: None,
         remaining_percent: None,
         hint: HINT.to_string(),
+        quota: None,
     }
+}
+
+fn default_runner(program: &str, args: &[&str]) -> Option<String> {
+    Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+fn copilot_api_url() -> String {
+    let port = env::var("PUP_COPILOT_API_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_API_PORT);
+    format!("http://localhost:{port}/usage")
+}
+
+fn fetch_copilot_api_quota(
+    runner: &mut impl FnMut(&str, &[&str]) -> Option<String>,
+) -> Option<CopilotQuotaInfo> {
+    let url = copilot_api_url();
+    fetch_copilot_api_quota_from_url(runner, &url)
+}
+
+fn fetch_copilot_api_quota_from_url(
+    runner: &mut impl FnMut(&str, &[&str]) -> Option<String>,
+    url: &str,
+) -> Option<CopilotQuotaInfo> {
+    let body = runner(
+        "curl",
+        &[
+            "-fsSL",
+            "--connect-timeout",
+            API_CONNECT_TIMEOUT_SECS,
+            "--max-time",
+            API_TIMEOUT_SECS,
+            url,
+        ],
+    )?;
+
+    parse_copilot_api_response(&body)
+}
+
+fn parse_copilot_api_response(body: &str) -> Option<CopilotQuotaInfo> {
+    let root: Value = serde_json::from_str(body).ok()?;
+
+    let login = root.get("login")?.as_str()?.to_string();
+    let plan = root
+        .get("copilot_plan")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let reset_date = root
+        .get("quota_reset_date")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-")
+        .to_string();
+
+    let snapshots = root.get("quota_snapshots")?;
+
+    let premium = parse_quota_entry(snapshots.get("premium_interactions")?)?;
+    let chat = parse_quota_entry(snapshots.get("chat")?)?;
+    let completions = parse_quota_entry(snapshots.get("completions")?)?;
+
+    Some(CopilotQuotaInfo {
+        login,
+        plan,
+        reset_date,
+        premium,
+        chat,
+        completions,
+    })
+}
+
+fn parse_quota_entry(value: &Value) -> Option<CopilotQuotaEntry> {
+    let entitlement = value.get("entitlement")?.as_u64().unwrap_or(0);
+    let remaining = value.get("remaining")?.as_u64().unwrap_or(0);
+    let percent_f = value
+        .get("percent_remaining")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let unlimited = value
+        .get("unlimited")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    Some(CopilotQuotaEntry {
+        entitlement,
+        remaining,
+        percent_remaining_x10: (percent_f * 10.0) as u64,
+        unlimited,
+    })
 }
 
 fn parse_json_string_value(content: &str, key: &str) -> Option<String> {
@@ -289,7 +401,7 @@ fn parse_quoted_string(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_copilot_usage_summary_with_home;
+    use super::{collect_copilot_usage_summary_with_home, parse_copilot_api_response};
     use crate::model::UsageAvailability;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -333,11 +445,19 @@ mod tests {
         format!(r#"{{"type":"{event_type}","data":{{"model":"claude-sonnet-4.6"}},"timestamp":"2027-01-14T02:13:20.000Z"}}"#)
     }
 
+    fn sample_api_response() -> &'static str {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/copilot-api-usage.json"
+        ))
+    }
+
     #[test]
     fn falls_back_to_defaults_when_home_is_missing() {
         let summary = collect_copilot_usage_summary_with_home(None, fixed_now());
         assert_eq!(summary.availability, UsageAvailability::Unavailable);
         assert_eq!(summary.model, "claude-sonnet-4-6");
+        assert!(summary.quota.is_none());
     }
 
     #[test]
@@ -385,5 +505,51 @@ mod tests {
         );
         let summary = collect_copilot_usage_summary_with_home(Some(&home.path), fixed_now());
         assert_eq!(summary.plan_type, "Individual");
+    }
+
+    #[test]
+    fn parses_api_response_quota_info() {
+        let info = parse_copilot_api_response(sample_api_response()).unwrap();
+        assert_eq!(info.login, "pengxu-liu_nioer");
+        assert_eq!(info.plan, "business");
+        assert_eq!(info.reset_date, "2026-05-01");
+
+        assert!(info.chat.unlimited);
+        assert!(info.completions.unlimited);
+        assert!(!info.premium.unlimited);
+
+        assert_eq!(info.premium.entitlement, 300);
+        assert_eq!(info.premium.remaining, 287);
+        assert_eq!(info.premium.percent_remaining_x10, 956); // 95.6 * 10
+    }
+
+    #[test]
+    fn parses_api_response_returns_none_for_invalid_json() {
+        assert!(parse_copilot_api_response("not json").is_none());
+        assert!(parse_copilot_api_response("{}").is_none());
+    }
+
+    #[test]
+    fn fetch_returns_none_when_runner_fails() {
+        let mut runner = |_program: &str, _args: &[&str]| -> Option<String> { None };
+        let result = super::fetch_copilot_api_quota_from_url(
+            &mut runner,
+            "http://localhost:9999/usage",
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn fetch_parses_runner_output() {
+        let body = sample_api_response().to_string();
+        let mut runner = move |_program: &str, _args: &[&str]| -> Option<String> {
+            Some(body.clone())
+        };
+        let result = super::fetch_copilot_api_quota_from_url(
+            &mut runner,
+            "http://localhost:1414/usage",
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().plan, "business");
     }
 }
