@@ -2,8 +2,8 @@ use std::env;
 use std::io::{self, IsTerminal};
 
 use crate::model::{
-    AiToolsSummary, AiUsageSummary, CopilotUsageSummary, RateLimitWindow, ServiceEntry,
-    SystemSummary, TokenBreakdown, WelcomeSnapshot,
+    AiToolsSummary, AiUsageSummary, CopilotQuotaEntry, CopilotUsageSummary, RateLimitWindow,
+    ServiceEntry, SystemSummary, TokenBreakdown, WelcomeSnapshot,
 };
 
 const DEFAULT_WIDTH: usize = 100;
@@ -250,18 +250,31 @@ fn render_ai_slim_section(
     });
     let copilot_sessions_str = copilot.total_sessions.map(format_number);
 
-    let mut copilot_items: Vec<(String, String)> = vec![
-        ("Model".to_string(), copilot.model.clone()),
-        (
-            "Total Req".to_string(),
-            copilot_req_str.unwrap_or_else(|| "-".to_string()),
-        ),
-        (
-            "Sessions".to_string(),
-            copilot_sessions_str.unwrap_or_else(|| "-".to_string()),
-        ),
-    ];
-    if copilot.total_requests.is_none() {
+    let mut copilot_items: Vec<(String, String)> = Vec::new();
+
+    if let Some(ref quota) = copilot.quota {
+        copilot_items.push(("Plan".to_string(), quota.plan.clone()));
+        copilot_items.push((
+            "Premium".to_string(),
+            format_quota_entry(&quota.premium),
+        ));
+        copilot_items.push(("Chat".to_string(), format_quota_entry(&quota.chat)));
+        copilot_items
+            .push(("Complete".to_string(), format_quota_entry(&quota.completions)));
+        copilot_items.push(("Reset".to_string(), quota.reset_date.clone()));
+    } else {
+        copilot_items.push(("Model".to_string(), copilot.model.clone()));
+    }
+
+    copilot_items.push((
+        "Total Req".to_string(),
+        copilot_req_str.unwrap_or_else(|| "-".to_string()),
+    ));
+    copilot_items.push((
+        "Sessions".to_string(),
+        copilot_sessions_str.unwrap_or_else(|| "-".to_string()),
+    ));
+    if copilot.quota.is_none() && copilot.total_requests.is_none() {
         copilot_items.push(("Hint".to_string(), copilot.hint.clone()));
     }
 
@@ -1112,6 +1125,19 @@ fn format_limit_label(window: &RateLimitWindow) -> String {
     }
 }
 
+fn format_quota_entry(entry: &CopilotQuotaEntry) -> String {
+    if entry.unlimited {
+        return "unlimited".to_string();
+    }
+    let whole = entry.percent_remaining_x10 / 10;
+    let frac = entry.percent_remaining_x10 % 10;
+    format!(
+        "{}/{} ({whole}.{frac}%)",
+        format_number(entry.remaining),
+        format_number(entry.entitlement),
+    )
+}
+
 fn format_remaining_bar(remaining_percent: u8, slots: usize) -> String {
     let filled = (((remaining_percent as usize) * slots) + 50) / 100;
     let filled = filled.min(slots);
@@ -1530,6 +1556,7 @@ mod tests {
             total_sessions: Some(25),
             remaining_percent: None,
             hint: "Run /usage in Copilot CLI for quota details".to_string(),
+            quota: None,
         }
     }
 

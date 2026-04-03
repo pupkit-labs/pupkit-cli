@@ -202,6 +202,27 @@ pub struct CopilotUsageSummary {
     pub total_sessions: Option<u64>,
     pub remaining_percent: Option<u8>,
     pub hint: String,
+    pub quota: Option<CopilotQuotaInfo>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopilotQuotaInfo {
+    pub login: String,
+    pub plan: String,
+    pub reset_date: String,
+    pub premium: CopilotQuotaEntry,
+    pub chat: CopilotQuotaEntry,
+    pub completions: CopilotQuotaEntry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopilotQuotaEntry {
+    pub entitlement: u64,
+    pub remaining: u64,
+    /// Stored as fixed-point (multiplied by 10) to keep Eq/PartialEq derivable.
+    /// e.g. 95.6% is stored as 956.
+    pub percent_remaining_x10: u64,
+    pub unlimited: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
