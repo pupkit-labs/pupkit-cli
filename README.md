@@ -39,6 +39,50 @@ cargo build --release
 ./target/release/pupkit welcome
 ```
 
+## Shell Setup 💻
+
+The setup below works for common terminals such as Terminal.app, iTerm2, Warp, and VS Code Terminal.
+
+If you installed `pupkit` via Homebrew or the shell installer, it is typically available on `PATH` already.
+
+If you built from source or want a manual setup, place the binary in `~/.local/bin`:
+
+```sh
+mkdir -p ~/.local/bin
+cp ./target/release/pupkit ~/.local/bin/pupkit
+```
+
+### zsh / bash
+
+Add this to `~/.zshrc` or `~/.bashrc`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+If you want a new interactive shell to render the welcome screen automatically:
+
+```sh
+command -v pupkit >/dev/null && pupkit welcome
+```
+
+### fish
+
+Add `~/.local/bin` to `PATH`:
+
+```fish
+fish_add_path $HOME/.local/bin
+```
+
+If you want a new interactive shell to render the welcome screen automatically, add this to `~/.config/fish/config.fish`:
+
+```fish
+if status is-interactive
+    and type -q pupkit
+    pupkit welcome
+end
+```
+
 ## Quick Start ⚡
 
 Render the welcome screen:
