@@ -1,4 +1,5 @@
 /target
+/docs/
 /.github/*
 !/.github/workflows/
 !/.github/workflows/release.yml
