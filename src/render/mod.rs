@@ -11,8 +11,14 @@ const DEFAULT_WIDTH: usize = 100;
 const MIN_LABEL_WIDTH: usize = 4;
 const MIN_VALUE_WIDTH: usize = 16;
 const ANSI_RESET: &str = "\u{1b}[0m";
-const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;5;151m";
-const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;5;223m";
+const CYAN_STYLE: &str = "\u{1b}[38;2;32;201;255m";
+const TITLE_GRADIENT_STOPS: &[(u8, u8, u8)] = &[
+    (180, 92, 255),
+    (84, 119, 255),
+    (32, 201, 255),
+];
+const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;2;92;255;128m";
+const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;2;255;210;150m";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LocalTimeContext {
@@ -46,11 +52,7 @@ fn render_welcome_slim_with_width_and_context(
     let mut output = String::new();
 
     output.push('\n');
-    output.push_str(" ____   _   _  ____   _  __  ___  _____ \n");
-    output.push_str("|  _ \\ | | | ||  _ \\ | |/ / |_ _||_   _|\n");
-    output.push_str("| |_) || | | || |_) || ' /   | |   | |  \n");
-    output.push_str("|  __/ | |_| ||  __/ | . \\   | |   | |  \n");
-    output.push_str("|_|     \\___/ |_|    |_|\\_\\ |___|  |_|  \n");
+    output.push_str(&render_title_art());
     output.push('\n');
     output.push_str(&format!("Welcome back, {}.\n", snapshot.user_label));
     output.push_str(&format!(
@@ -113,38 +115,11 @@ fn render_ai_slim_section(
     local_time: &LocalTimeContext,
 ) -> String {
     let claude_24h = format_token_breakdown_compact(&usage.claude.last_24h);
-    let last_7d = &usage.claude.last_7d;
-    let has_7d =
-        last_7d.total_tokens > 0 || last_7d.input_tokens.map(|value| value > 0).unwrap_or(false);
     let mut claude_items: Vec<(String, String)> = vec![
         ("Model".to_string(), tools.claude_model.clone()),
         ("24h".to_string(), claude_24h),
     ];
-
-    if has_7d {
-        claude_items.push((
-            "7d".to_string(),
-            format_compact_number(last_7d.total_tokens),
-        ));
-        if let Some(value) = last_7d.input_tokens {
-            claude_items.push(("7d in".to_string(), format_compact_number(value)));
-        }
-        if let Some(value) = last_7d.output_tokens {
-            claude_items.push(("7d out".to_string(), format_compact_number(value)));
-        }
-        if let Some(value) = last_7d.cache_creation_input_tokens {
-            if value > 0 {
-                claude_items.push(("7d cache+".to_string(), format_compact_number(value)));
-            }
-        }
-        if let Some(value) = last_7d.cache_read_input_tokens {
-            if value > 0 {
-                claude_items.push(("7d cache~".to_string(), format_compact_number(value)));
-            }
-        }
-    } else {
-        claude_items.push(("7d".to_string(), "-".to_string()));
-    }
+    claude_items.push(("7d".to_string(), format_token_breakdown_compact(&usage.claude.last_7d)));
 
     let codex_primary_label = format_limit_label(&usage.codex.primary_rate_limit);
     let codex_primary_value =
@@ -202,15 +177,17 @@ fn render_ai_slim_section(
         ("Copilot", copilot_items),
     ];
 
-    let table = render_grouped_ai_table("AI Quick Look", &groups, total_width);
-    let table_width = table
+    let raw_table = render_grouped_ai_table("AI Quick Look", &groups, total_width);
+    let table_width = raw_table
         .lines()
         .find(|line| line.starts_with('┌'))
         .map(display_width)
         .unwrap_or(total_width);
-    let separator: String = (0..table_width)
+    let raw_separator: String = (0..table_width)
         .map(|index| if index % 2 == 0 { '~' } else { '+' })
         .collect();
+    let separator = style_separator_line(&raw_separator);
+    let table = style_table_frame(&raw_table);
 
     format!("{separator}\n{table}")
 }
@@ -450,6 +427,10 @@ fn is_regional_indicator(character: char) -> bool {
     matches!(u32::from(character), 0x1F1E6..=0x1F1FF)
 }
 
+fn is_box_drawing(character: char) -> bool {
+    matches!(u32::from(character), 0x2500..=0x257F)
+}
+
 fn pad_visible(text: &str, width: usize) -> String {
     let visible = display_width(text);
     if visible >= width {
@@ -465,6 +446,106 @@ fn can_use_ansi_color() -> bool {
             .map(|value| value != "dumb")
             .unwrap_or(true)
         && env::var_os("NO_COLOR").is_none()
+}
+
+fn style_separator_line(text: &str) -> String {
+    if !can_use_ansi_color() {
+        return text.to_string();
+    }
+
+    format!("{CYAN_STYLE}{text}{ANSI_RESET}")
+}
+
+fn style_table_frame(text: &str) -> String {
+    if !can_use_ansi_color() {
+        return text.to_string();
+    }
+
+    let mut output = String::with_capacity(text.len());
+    for character in text.chars() {
+        if is_box_drawing(character) {
+            output.push_str(CYAN_STYLE);
+            output.push(character);
+            output.push_str(ANSI_RESET);
+        } else {
+            output.push(character);
+        }
+    }
+
+    output
+}
+
+fn render_title_art() -> String {
+    const TITLE_LINES: [&str; 5] = [
+        " ____   _   _  ____   _  __  ___  _____ ",
+        "|  _ \\ | | | ||  _ \\ | |/ / |_ _||_   _|",
+        "| |_) || | | || |_) || ' /   | |   | |  ",
+        "|  __/ | |_| ||  __/ | . \\   | |   | |  ",
+        "|_|     \\___/ |_|    |_|\\_\\ |___|  |_|  ",
+    ];
+
+    if !can_use_ansi_color() {
+        return format!("{}\n", TITLE_LINES.join("\n"));
+    }
+
+    let total_visible_chars = TITLE_LINES
+        .iter()
+        .flat_map(|line| line.chars())
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let mut output = String::new();
+    let mut visible_index = 0usize;
+
+    for line in TITLE_LINES {
+        for character in line.chars() {
+            if character.is_whitespace() {
+                output.push(character);
+                continue;
+            }
+
+            let (red, green, blue) =
+                gradient_color(visible_index, total_visible_chars, TITLE_GRADIENT_STOPS);
+            output.push_str(&format!("\u{1b}[38;2;{red};{green};{blue}m{character}{ANSI_RESET}"));
+            visible_index += 1;
+        }
+        output.push('\n');
+    }
+
+    output
+}
+
+fn gradient_color(index: usize, total: usize, stops: &[(u8, u8, u8)]) -> (u8, u8, u8) {
+    if stops.is_empty() {
+        return (255, 255, 255);
+    }
+    if stops.len() == 1 || total <= 1 {
+        return stops[0];
+    }
+
+    let segments = stops.len() - 1;
+    let scaled = index.saturating_mul(segments);
+    let start_index = (scaled / (total - 1)).min(segments - 1);
+    let end_index = (start_index + 1).min(stops.len() - 1);
+    let segment_start = start_index * (total - 1) / segments;
+    let segment_end = ((start_index + 1) * (total - 1)) / segments;
+    let span = segment_end.saturating_sub(segment_start).max(1);
+    let offset = index.saturating_sub(segment_start).min(span);
+    let t = offset as f32 / span as f32;
+
+    interpolate_rgb(stops[start_index], stops[end_index], t)
+}
+
+fn interpolate_rgb(start: (u8, u8, u8), end: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let lerp = |a: u8, b: u8| -> u8 {
+        let value = a as f32 + (b as f32 - a as f32) * t;
+        value.round().clamp(0.0, 255.0) as u8
+    };
+
+    (
+        lerp(start.0, end.0),
+        lerp(start.1, end.1),
+        lerp(start.2, end.2),
+    )
 }
 
 fn format_token_breakdown_compact(value: &TokenBreakdown) -> String {
