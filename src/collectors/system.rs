@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::collectors::ai_tools::collect_ai_tools_summary;
 use crate::collectors::ai_usage::collect_ai_usage_summary;
+use crate::collectors::copilot::collect_copilot_usage_summary;
 use crate::model::{PublicIpSource, PublicIpSummary, SystemSummary, WelcomeSnapshot};
 use crate::shell;
 
@@ -49,6 +50,7 @@ pub fn collect_welcome_snapshot() -> WelcomeSnapshot {
     let system = collect_system_summary();
     let ai_tools = collect_ai_tools_summary();
     let ai_usage = collect_ai_usage_summary();
+    let copilot = collect_copilot_usage_summary();
 
     WelcomeSnapshot {
         timestamp: detect_time_label(),
@@ -58,6 +60,7 @@ pub fn collect_welcome_snapshot() -> WelcomeSnapshot {
         system,
         ai_tools,
         ai_usage,
+        copilot,
     }
 }
 

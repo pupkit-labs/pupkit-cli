@@ -1,5 +1,6 @@
 mod ai_tools;
 mod ai_usage;
+mod details;
 mod install;
 mod services;
 mod system_summary;
@@ -18,6 +19,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         AppCommand::AiUsage => ai_usage::execute(),
         AppCommand::Install => install::execute(),
         AppCommand::Services => services::execute(),
+        AppCommand::Details => details::execute(),
         AppCommand::Help => {
             print!("{}", help_text(&program_name(&args)));
             Ok(())
@@ -40,6 +42,7 @@ fn parse_command(args: &[String]) -> Result<AppCommand, String> {
         Some("ai-usage") => Ok(AppCommand::AiUsage),
         Some("install") => Ok(AppCommand::Install),
         Some("services") => Ok(AppCommand::Services),
+        Some("details") => Ok(AppCommand::Details),
         Some("help") | Some("-h") | Some("--help") => Ok(AppCommand::Help),
         Some("version") | Some("-V") | Some("--version") => Ok(AppCommand::Version),
         Some(other) => Err(format!(
@@ -63,7 +66,8 @@ Usage:
   {program} [command]
 
 Commands:
-  welcome         Render the current local welcome screen
+  welcome         Render the slim welcome screen (default)
+  details         Print full system summary, AI tools, AI usage, and services
   system-summary  Print the current local system summary
   ai-tools        Print the merged local Claude and Codex AI summary
                   Use `ai-tools --skills` to print the local skills summary
@@ -116,6 +120,12 @@ mod tests {
     fn parses_services_command() {
         let args = vec!["pup".to_string(), "services".to_string()];
         assert_eq!(parse_command(&args).unwrap(), AppCommand::Services);
+    }
+
+    #[test]
+    fn parses_details_command() {
+        let args = vec!["pup".to_string(), "details".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), AppCommand::Details);
     }
 
     #[test]

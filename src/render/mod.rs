@@ -2,8 +2,8 @@ use std::env;
 use std::io::{self, IsTerminal};
 
 use crate::model::{
-    AiToolsSummary, AiUsageSummary, RateLimitWindow, ServiceEntry, SystemSummary, TokenBreakdown,
-    WelcomeSnapshot,
+    AiToolsSummary, AiUsageSummary, CopilotUsageSummary, RateLimitWindow, ServiceEntry,
+    SystemSummary, TokenBreakdown, WelcomeSnapshot,
 };
 
 const DEFAULT_WIDTH: usize = 100;
@@ -113,6 +113,208 @@ pub fn render_services(entries: &[ServiceEntry]) -> String {
 
     render_box_table("Services", &rows, resolve_total_width())
 }
+
+pub fn render_welcome_slim(snapshot: &WelcomeSnapshot) -> String {
+    render_welcome_slim_with_width(snapshot, resolve_total_width())
+}
+
+pub fn render_details(
+    system: &SystemSummary,
+    ai_tools: &AiToolsSummary,
+    ai_usage: &AiUsageSummary,
+    services: &[ServiceEntry],
+) -> String {
+    render_details_with_width(system, ai_tools, ai_usage, services, resolve_total_width())
+}
+
+/// Renders IP and Proxy on one line, left-aligned, with ANSI color on the proxy value.
+fn render_network_kv(ip_label: &str, proxy_label: &str) -> String {
+    let key_width = 5; // width of "Proxy"
+    let proxy_highlighted = if can_use_ansi_color() {
+        let style = if proxy_label.trim_start().starts_with("已启用") {
+            Some(PROXY_ENABLED_STYLE)
+        } else if proxy_label.trim_start().starts_with("未启用") {
+            Some(PROXY_DISABLED_STYLE)
+        } else {
+            None
+        };
+        match style {
+            Some(s) => format!("{s} {} {ANSI_RESET}", proxy_label.trim()),
+            None => proxy_label.to_string(),
+        }
+    } else {
+        proxy_label.to_string()
+    };
+
+    format!(
+        "  {:<key_width$}  {}    {:<key_width$}  {}\n",
+        "IP", ip_label, "Proxy", proxy_highlighted,
+    )
+}
+
+fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
+    let mut output = String::new();
+
+    output.push('\n');
+    output.push_str(" ____   _   _  ____   _  __  ___  _____ \n");
+    output.push_str("|  _ \\ | | | ||  _ \\ | |/ / |_ _||_   _|\n");
+    output.push_str("| |_) || | | || |_) || ' /   | |   | |  \n");
+    output.push_str("|  __/ | |_| ||  __/ | . \\   | |   | |  \n");
+    output.push_str("|_|     \\___/ |_|    |_|\\_\\ |___|  |_|  \n");
+    output.push('\n');
+    output.push_str(&format!("Welcome back, {}.\n", snapshot.user_label));
+    output.push_str(&format!(
+        "🕐 {}   👤 {}@{}\n\n",
+        snapshot.timestamp, snapshot.user_label, snapshot.host_label
+    ));
+
+    // Build AI section first so we can reuse its separator width for the top border too.
+    let ai_section = render_ai_slim_section(
+        &snapshot.ai_tools,
+        &snapshot.ai_usage,
+        &snapshot.copilot,
+        total_width,
+    );
+    // The first line of ai_section is the =+=+ separator; reuse it above the network row.
+    let separator = ai_section.lines().next().unwrap_or("").to_string();
+
+    // Network: IP + Proxy on one line, framed by matching separators
+    let public_ip_label = snapshot.system.public_ip.display_label();
+    output.push_str(&separator);
+    output.push('\n');
+    output.push_str(&render_network_kv(
+        &public_ip_label,
+        &snapshot.system.proxy_label,
+    ));
+
+    // AI quick-look (already includes its own leading separator)
+    output.push_str(&ai_section);
+
+    output
+
+}
+
+fn render_ai_slim_section(
+    tools: &AiToolsSummary,
+    usage: &AiUsageSummary,
+    copilot: &CopilotUsageSummary,
+    total_width: usize,
+) -> String {
+    let claude_24h = format_token_breakdown_compact(&usage.claude.last_24h);
+
+    // Claude 7d: each metric on its own row
+    let last_7d = &usage.claude.last_7d;
+    let has_7d = last_7d.total_tokens > 0
+        || last_7d.input_tokens.map(|n| n > 0).unwrap_or(false);
+    let mut claude_items: Vec<(String, String)> = vec![
+        ("Model".to_string(), tools.claude_model.clone()),
+        ("24h".to_string(), claude_24h),
+    ];
+    if has_7d {
+        claude_items.push(("7d".to_string(), format_compact_number(last_7d.total_tokens)));
+        if let Some(n) = last_7d.input_tokens {
+            claude_items.push(("7d in".to_string(), format_compact_number(n)));
+        }
+        if let Some(n) = last_7d.output_tokens {
+            claude_items.push(("7d out".to_string(), format_compact_number(n)));
+        }
+        if let Some(n) = last_7d.cache_creation_input_tokens {
+            if n > 0 {
+                claude_items.push(("7d cache+".to_string(), format_compact_number(n)));
+            }
+        }
+        if let Some(n) = last_7d.cache_read_input_tokens {
+            if n > 0 {
+                claude_items.push(("7d cache~".to_string(), format_compact_number(n)));
+            }
+        }
+    } else {
+        claude_items.push(("7d".to_string(), "-".to_string()));
+    }
+
+    let codex_primary_label = format_limit_label(&usage.codex.primary_rate_limit);
+    let codex_primary_value =
+        format_rate_limit_value_slim(usage, &usage.codex.primary_rate_limit)
+            .unwrap_or("-".to_string());
+    let codex_secondary_label = format_limit_label(&usage.codex.secondary_rate_limit);
+    let codex_secondary_value =
+        format_rate_limit_value_slim(usage, &usage.codex.secondary_rate_limit)
+            .unwrap_or("-".to_string());
+
+    let copilot_req_str = copilot.total_requests.map(|n| {
+        let per_day = copilot
+            .last_24h_requests
+            .map(|d| format!(" · 24h {}", format_number(d)))
+            .unwrap_or_default();
+        format!("{}{}", format_number(n), per_day)
+    });
+    let copilot_sessions_str = copilot.total_sessions.map(format_number);
+
+    let mut copilot_items: Vec<(String, String)> = vec![
+        ("Model".to_string(), copilot.model.clone()),
+        (
+            "Total Req".to_string(),
+            copilot_req_str.unwrap_or_else(|| "-".to_string()),
+        ),
+        (
+            "Sessions".to_string(),
+            copilot_sessions_str.unwrap_or_else(|| "-".to_string()),
+        ),
+    ];
+    if copilot.total_requests.is_none() {
+        copilot_items.push(("Hint".to_string(), copilot.hint.clone()));
+    }
+
+    let groups: Vec<(&str, Vec<(String, String)>)> = vec![
+        ("Claude", claude_items),
+        (
+            "Codex",
+            vec![
+                ("Model".to_string(), tools.codex_model.clone()),
+                (codex_primary_label, codex_primary_value),
+                (codex_secondary_label, codex_secondary_value),
+            ],
+        ),
+        ("Copilot", copilot_items),
+    ];
+
+    let table_str = render_grouped_ai_table("AI Quick Look", &groups, total_width);
+
+    // Separator: =+=+=+ pattern, width = actual table width (from the ┌ border line)
+    let table_width = table_str
+        .lines()
+        .find(|l| l.starts_with('┌'))
+        .map(display_width)
+        .unwrap_or(total_width);
+    let separator: String = (0..table_width)
+        .map(|i| if i % 2 == 0 { '=' } else { '+' })
+        .collect();
+
+    format!("{separator}\n{table_str}")
+}
+
+fn render_details_with_width(
+    system: &SystemSummary,
+    ai_tools: &AiToolsSummary,
+    ai_usage: &AiUsageSummary,
+    services: &[ServiceEntry],
+    total_width: usize,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&render_system_summary_with_width(system, total_width));
+    output.push_str(&render_ai_tools_summary_with_width(ai_tools, ai_usage, total_width));
+    output.push_str(&render_ai_skills_summary_with_width(ai_tools, total_width));
+    output.push_str(&render_ai_usage_summary_with_width(ai_usage, total_width));
+    let service_rows: Vec<(&str, &str)> = services
+        .iter()
+        .map(|e| (e.name.as_str(), e.detail.as_str()))
+        .collect();
+    if !service_rows.is_empty() {
+        output.push_str(&render_box_table("Services", &service_rows, total_width));
+    }
+    output
+}
+
 
 fn render_ai_tools_summary_with_width(
     summary: &AiToolsSummary,
@@ -375,6 +577,126 @@ fn render_box_table_owned(title: &str, rows: &[(String, String)], total_width: u
     render_box_table(title, &borrowed_rows, total_width)
 }
 
+/// Renders a box table where each `group` is a named set of (sub_label, value) rows.
+/// - Rows within the same group share no horizontal separator on the left column
+///   (merging the left cells), creating a tree-like appearance.
+/// - Groups are separated by a full ├──┼──┤ divider.
+fn render_grouped_ai_table(
+    title: &str,
+    groups: &[(&str, Vec<(String, String)>)],
+    total_width: usize,
+) -> String {
+    // Compute max label display width across all tree-formatted labels.
+    let label_width = groups
+        .iter()
+        .flat_map(|(group, items)| {
+            let n = items.len();
+            let indent_len = display_width(group);
+            items.iter().enumerate().map(move |(i, (sub_label, _))| {
+                let label = if n == 1 {
+                    display_width(group) + 3 + display_width(sub_label)
+                } else if i == 0 {
+                    display_width(group) + 3 + display_width(sub_label)
+                } else {
+                    indent_len + 3 + display_width(sub_label)
+                };
+                label
+            })
+        })
+        .max()
+        .unwrap_or(MIN_LABEL_WIDTH)
+        .max(MIN_LABEL_WIDTH);
+
+    // Auto-fit: shrink right column to actual max content width (no wasted padding).
+    let max_content_width = groups
+        .iter()
+        .flat_map(|(_, items)| items.iter())
+        .flat_map(|(_, value)| value.split('\n'))
+        .map(display_width)
+        .max()
+        .unwrap_or(MIN_VALUE_WIDTH);
+    let available_value_width = total_width
+        .saturating_sub(label_width + 7)
+        .max(MIN_VALUE_WIDTH);
+    let value_width = max_content_width
+        .max(MIN_VALUE_WIDTH)
+        .min(available_value_width);
+    let label_col_width = label_width + 2;
+    let value_col_width = value_width + 2;
+
+    let mut output = String::new();
+    output.push_str(title);
+    output.push('\n');
+    output.push_str(&render_border("┌", "┬", "┐", &[label_col_width, value_col_width]));
+
+    let n_groups = groups.len();
+    for (gi, (group, items)) in groups.iter().enumerate() {
+        let n_items = items.len();
+        let indent = " ".repeat(display_width(group));
+
+        for (ii, (sub_label, value)) in items.iter().enumerate() {
+            let is_last_item = ii + 1 == n_items;
+            let tree_label: String = if n_items == 1 {
+                format!("{group} ─ {sub_label}")
+            } else if ii == 0 {
+                format!("{group} ┬ {sub_label}")
+            } else if is_last_item {
+                format!("{indent} └ {sub_label}")
+            } else {
+                format!("{indent} ├ {sub_label}")
+            };
+
+            // For non-last items, multi-line value rows need a │ connector in the
+            // left column to visually bridge between the ├/┬ above and ├/└ below.
+            let continuation_label: String = if !is_last_item {
+                format!("{indent} │")
+            } else {
+                String::new()
+            };
+
+            let value_lines = wrap_text(value, value_width);
+            for (li, value_line) in value_lines.iter().enumerate() {
+                let label_text = if li == 0 {
+                    tree_label.as_str()
+                } else {
+                    continuation_label.as_str()
+                };
+                output.push_str("│ ");
+                output.push_str(&pad_visible(label_text, label_width));
+                output.push_str(" │ ");
+                output.push_str(&pad_visible(value_line, value_width));
+                output.push_str(" │\n");
+            }
+
+            let is_last_group = gi + 1 == n_groups;
+            if is_last_item && is_last_group {
+                output.push_str(&render_border("└", "┴", "┘", &[label_col_width, value_col_width]));
+            } else if is_last_item {
+                // Between-group full divider.
+                output.push_str(&render_border("├", "┼", "┤", &[label_col_width, value_col_width]));
+            } else {
+                // Within-group: right column separator + │ connector in left column.
+                // The │ is at the same horizontal position as ┬/├/└ in the data rows.
+                let indent_len = indent.len();
+                let remaining = label_width.saturating_sub(indent_len + 2);
+                output.push('│');
+                output.push(' ');
+                output.push_str(&indent);
+                output.push(' ');
+                output.push('│'); // tree vertical connector
+                output.push_str(&" ".repeat(remaining));
+                output.push(' ');
+                output.push('├');
+                output.push_str(&"─".repeat(value_col_width));
+                output.push_str("┤\n");
+            }
+        }
+    }
+
+    output.push('\n');
+    output
+}
+
 fn resolve_total_width() -> usize {
     env::var("COLUMNS")
         .ok()
@@ -574,6 +896,7 @@ fn char_display_width(character: char) -> usize {
     if character.is_ascii()
         || matches!(character, '·' | '•' | '…' | '█' | '░')
         || is_regional_indicator(character)
+        || matches!(u32::from(character), 0x2500..=0x257F) // box-drawing (─ │ ┬ ├ └ …)
     {
         1
     } else {
@@ -610,7 +933,13 @@ fn render_value_cell(label: &str, text: &str, width: usize) -> String {
     };
 
     match style {
-        Some(style) => format!("{style}{padded}{ANSI_RESET}"),
+        Some(style) => {
+            let trimmed = text.trim();
+            let highlighted = format!(" {trimmed} ");
+            let visible_len = display_width(&highlighted);
+            let remaining = width.saturating_sub(visible_len);
+            format!("{style}{highlighted}{ANSI_RESET}{}", " ".repeat(remaining))
+        }
         None => padded,
     }
 }
@@ -664,6 +993,51 @@ fn format_token_breakdown(value: &TokenBreakdown) -> String {
     }
 
     parts.join(" · ")
+}
+
+fn format_token_breakdown_compact(value: &TokenBreakdown) -> String {
+    if value.total_tokens == 0
+        && value.input_tokens.is_none()
+        && value.output_tokens.is_none()
+        && value.cache_creation_input_tokens.is_none()
+        && value.cache_read_input_tokens.is_none()
+    {
+        return "-".to_string();
+    }
+
+    let mut parts = vec![format!("{}", format_compact_number(value.total_tokens))];
+
+    if let Some(input_tokens) = value.input_tokens {
+        parts.push(format!("in {}", format_compact_number(input_tokens)));
+    }
+    if let Some(output_tokens) = value.output_tokens {
+        parts.push(format!("out {}", format_compact_number(output_tokens)));
+    }
+    if let Some(cache_creation_input_tokens) = value.cache_creation_input_tokens {
+        if cache_creation_input_tokens > 0 {
+            parts.push(format!("cache+ {}", format_compact_number(cache_creation_input_tokens)));
+        }
+    }
+    if let Some(cache_read_input_tokens) = value.cache_read_input_tokens {
+        if cache_read_input_tokens > 0 {
+            parts.push(format!("cache~ {}", format_compact_number(cache_read_input_tokens)));
+        }
+    }
+
+    parts.join(" · ")
+}
+
+fn format_rate_limit_value_slim(summary: &AiUsageSummary, window: &RateLimitWindow) -> Option<String> {
+    let used_percent = window.used_percent?;
+    let remaining_percent = 100_u8.saturating_sub(used_percent);
+    let reset_label = format_rate_limit_reset(&window.resets_at, &summary.codex.last_active_at);
+
+    Some(format!(
+        "[{}] {}% left\n{}",
+        format_remaining_bar(remaining_percent, 10),
+        remaining_percent,
+        reset_label
+    ))
 }
 
 fn format_optional_total(value: Option<u64>) -> String {
@@ -854,15 +1228,15 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::model::{
-        AiToolsSummary, AiUsageSummary, ClaudeUsageSummary, CodexUsageSummary, RateLimitWindow,
-        ServiceEntry, ServiceManager, ServiceStatus, SystemSummary, TokenBreakdown,
+        AiToolsSummary, AiUsageSummary, ClaudeUsageSummary, CodexUsageSummary, CopilotUsageSummary,
+        RateLimitWindow, ServiceEntry, ServiceManager, ServiceStatus, SystemSummary, TokenBreakdown,
         UsageAvailability, WelcomeSnapshot,
     };
 
     use super::{
         render_ai_skills_summary_with_width, render_ai_tools_summary_with_width,
-        render_ai_usage_summary_with_width, render_services, render_system_summary_with_width,
-        render_welcome_with_width,
+        render_ai_usage_summary_with_width, render_details_with_width, render_services,
+        render_system_summary_with_width, render_welcome_slim_with_width, render_welcome_with_width,
     };
 
     #[test]
@@ -1000,6 +1374,52 @@ mod tests {
         assert!(output.contains("active/running / enabled enabled"));
     }
 
+    #[test]
+    fn welcome_slim_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_welcome_slim_with_width(&snapshot, 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-slim-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn welcome_slim_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output = render_welcome_slim_with_width(&snapshot, 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-slim-narrow.txt"))
+        );
+    }
+
+    #[test]
+    fn details_render_matches_wide_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output =
+            render_details_with_width(&snapshot.system, &snapshot.ai_tools, &snapshot.ai_usage, &[], 100);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("details-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn details_render_matches_narrow_snapshot() {
+        let snapshot = sample_welcome_snapshot();
+        let output =
+            render_details_with_width(&snapshot.system, &snapshot.ai_tools, &snapshot.ai_usage, &[], 60);
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("details-narrow.txt"))
+        );
+    }
+
     fn sample_welcome_snapshot() -> WelcomeSnapshot {
         let fixture = fixture_map();
 
@@ -1035,6 +1455,7 @@ mod tests {
                 summary.warnings.clear();
                 summary
             },
+            copilot: sample_copilot_summary(),
         }
     }
 
@@ -1080,12 +1501,14 @@ mod tests {
                     used_percent: Some(42),
                     window_minutes: Some(300),
                     resets_at: "2026-03-29 00:00 UTC".to_string(),
+                    resets_at_epoch_secs: None,
                 },
                 secondary_rate_limit: RateLimitWindow {
                     label: "Secondary",
                     used_percent: Some(12),
                     window_minutes: Some(10_080),
                     resets_at: "2026-03-30 00:00 UTC".to_string(),
+                    resets_at_epoch_secs: None,
                 },
                 hint: "Run /status in Codex for current usage".to_string(),
             },
@@ -1093,6 +1516,20 @@ mod tests {
                 "Claude skipped 1 malformed line".to_string(),
                 "Codex auth plan type unavailable".to_string(),
             ],
+        }
+    }
+
+    fn sample_copilot_summary() -> CopilotUsageSummary {
+        CopilotUsageSummary {
+            availability: UsageAvailability::Live,
+            model: "claude-sonnet-4.6".to_string(),
+            plan_type: "Individual".to_string(),
+            last_active_at: "2026-03-28 12:00 UTC".to_string(),
+            total_requests: Some(585),
+            last_24h_requests: Some(42),
+            total_sessions: Some(25),
+            remaining_percent: None,
+            hint: "Run /usage in Copilot CLI for quota details".to_string(),
         }
     }
 
@@ -1163,6 +1600,22 @@ mod tests {
             "ai-usage-narrow.txt" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/snapshots/ai-usage-narrow.txt"
+            )),
+            "welcome-slim-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-slim-wide.txt"
+            )),
+            "welcome-slim-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-slim-narrow.txt"
+            )),
+            "details-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/details-wide.txt"
+            )),
+            "details-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/details-narrow.txt"
             )),
             other => panic!("unknown snapshot: {other}"),
         }
