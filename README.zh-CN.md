@@ -130,9 +130,3 @@ dist manifest --output-format=json --no-local-paths
 
 - GitHub Releases：`https://github.com/pupkit-labs/pupkit-cli/releases`
 - Homebrew tap：`pupkit-labs/homebrew-tap`
-
-如果要让 GitHub Actions 自动发布 Homebrew formula，`pupkit-labs/pupkit-cli` 仓库里需要配置：
-
-- `HOMEBREW_TAP_TOKEN`
-
-这个 token 需要对 `pupkit-labs/homebrew-tap` 具有写权限。
