@@ -1,4 +1,6 @@
-# pupkit
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
+# pupkit 🐾
 
 `pupkit` is a welcome-first CLI for surfacing local environment info and AI usage at a glance.
 
@@ -16,7 +18,7 @@ The current product surface is intentionally small:
 - `pupkit welcome`
 - `pupkit auth`
 
-## Install
+## Install 📦
 
 ### Homebrew
 
@@ -37,7 +39,7 @@ cargo build --release
 ./target/release/pupkit welcome
 ```
 
-## Quick Start
+## Quick Start ⚡
 
 Render the welcome screen:
 
@@ -57,7 +59,7 @@ If you need to refresh GitHub authentication for Copilot quota lookup:
 pupkit auth
 ```
 
-## Commands
+## Commands 🧭
 
 ### `welcome`
 
@@ -74,7 +76,7 @@ This includes:
 
 Force a fresh GitHub device flow and store the resulting token for later Copilot quota requests.
 
-## Authentication
+## Authentication 🔐
 
 Copilot quota is fetched directly from GitHub:
 
@@ -94,7 +96,7 @@ If you want the `welcome` path to trigger device flow when no token is available
 PUP_COPILOT_DEVICE_AUTH=1 pupkit welcome
 ```
 
-## Environment Variables
+## Environment Variables 🌍
 
 - `PUP_GITHUB_TOKEN`: preferred GitHub token for Copilot quota requests
 - `GITHUB_TOKEN`: fallback GitHub token
@@ -102,7 +104,7 @@ PUP_COPILOT_DEVICE_AUTH=1 pupkit welcome
 - `PUP_COPILOT_DEVICE_AUTH=1`: allow `welcome` to enter GitHub device flow when needed
 - `PUP_PROXY_TUN_ADDR`: optional `host:port` override used for proxy/TUN detection
 
-## Development
+## Development 🛠️
 
 Run locally:
 
@@ -122,7 +124,7 @@ Validate release config:
 dist manifest --output-format=json --no-local-paths
 ```
 
-## Release
+## Release 🚀
 
 Release artifacts are published through:
 
@@ -135,6 +137,6 @@ To publish Homebrew formula updates from GitHub Actions, the repository `pupkit-
 
 This token should have write access to `pupkit-labs/homebrew-tap`.
 
-## Status
+## Status 📌
 
 `pupkit` is currently scoped to a minimal welcome-only CLI. The data collectors remain only where they are needed to render the welcome screen.
