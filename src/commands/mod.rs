@@ -1,53 +1,21 @@
-mod ai_tools;
-mod ai_usage;
-mod details;
-mod install;
-mod services;
-mod system_summary;
 mod welcome;
 
-use crate::model::AppCommand;
-
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    let command = parse_command(&args)?;
-    let explicit_welcome = matches!(args.get(1).map(String::as_str), Some("welcome"));
-
-    match command {
-        AppCommand::Welcome => welcome::execute(explicit_welcome),
-        AppCommand::SystemSummary => system_summary::execute(),
-        AppCommand::AiTools => ai_tools::execute(args.get(2..).unwrap_or(&[])),
-        AppCommand::AiUsage => ai_usage::execute(),
-        AppCommand::Install => install::execute(),
-        AppCommand::Services => services::execute(),
-        AppCommand::Details => details::execute(),
-        AppCommand::Help => {
-            print!("{}", help_text(&program_name(&args)));
-            Ok(())
-        }
-        AppCommand::Version => {
-            println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-    }
+    let explicit_welcome = resolve_welcome_mode(&args)?;
+    welcome::execute(explicit_welcome)
 }
 
-fn parse_command(args: &[String]) -> Result<AppCommand, String> {
-    let command = args.get(1).map(String::as_str);
-
-    match command {
-        None => Ok(AppCommand::Welcome),
-        Some("welcome") => Ok(AppCommand::Welcome),
-        Some("system-summary") => Ok(AppCommand::SystemSummary),
-        Some("ai-tools") => Ok(AppCommand::AiTools),
-        Some("ai-usage") => Ok(AppCommand::AiUsage),
-        Some("install") => Ok(AppCommand::Install),
-        Some("services") => Ok(AppCommand::Services),
-        Some("details") => Ok(AppCommand::Details),
-        Some("help") | Some("-h") | Some("--help") => Ok(AppCommand::Help),
-        Some("version") | Some("-V") | Some("--version") => Ok(AppCommand::Version),
+fn resolve_welcome_mode(args: &[String]) -> Result<bool, String> {
+    match args.get(1).map(String::as_str) {
+        None => Ok(false),
+        Some("welcome") if args.len() == 2 => Ok(true),
+        Some("welcome") => Err(format!(
+            "welcome does not take additional arguments\n\n{}",
+            usage_text(&program_name(args))
+        )),
         Some(other) => Err(format!(
-            "unknown command: {other}\n\n{}",
-            help_text(&program_name(args))
+            "unsupported command: {other}\n\n{}",
+            usage_text(&program_name(args))
         )),
     }
 }
@@ -59,79 +27,48 @@ fn program_name(args: &[String]) -> String {
         .to_string()
 }
 
-fn help_text(program: &str) -> String {
+fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [command]
-
-Commands:
-  welcome         Render the slim welcome screen (default)
-  details         Print full system summary, AI tools, AI usage, and services
-  system-summary  Print the current local system summary
-  ai-tools        Print the merged local Claude and Codex AI summary
-                  Use `ai-tools --skills` to print the local skills summary
-  ai-usage        Print the local Claude and Codex usage summary
-  install         Install `pup` into ~/.local/bin and auto-enable zsh/bash/fish
-  services        Print the current local services summary
-  help            Show this help text
-  version         Show package version
+  {program} [welcome]
 "
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::model::AppCommand;
-
-    use super::parse_command;
+    use super::resolve_welcome_mode;
 
     #[test]
-    fn defaults_to_welcome_when_no_command_is_passed() {
+    fn defaults_to_implicit_welcome_when_no_command_is_passed() {
         let args = vec!["pup".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::Welcome);
+        assert!(!resolve_welcome_mode(&args).unwrap());
     }
 
     #[test]
-    fn parses_system_summary_command() {
-        let args = vec!["pup".to_string(), "system-summary".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::SystemSummary);
+    fn parses_explicit_welcome_command() {
+        let args = vec!["pup".to_string(), "welcome".to_string()];
+        assert!(resolve_welcome_mode(&args).unwrap());
     }
 
     #[test]
-    fn parses_ai_tools_command() {
-        let args = vec!["pup".to_string(), "ai-tools".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::AiTools);
+    fn rejects_additional_welcome_arguments() {
+        let args = vec![
+            "pup".to_string(),
+            "welcome".to_string(),
+            "--extra".to_string(),
+        ];
+        let error = resolve_welcome_mode(&args).unwrap_err();
+
+        assert!(error.contains("welcome does not take additional arguments"));
     }
 
     #[test]
-    fn parses_ai_usage_command() {
-        let args = vec!["pup".to_string(), "ai-usage".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::AiUsage);
-    }
-
-    #[test]
-    fn parses_install_command() {
-        let args = vec!["pup".to_string(), "install".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::Install);
-    }
-
-    #[test]
-    fn parses_services_command() {
-        let args = vec!["pup".to_string(), "services".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::Services);
-    }
-
-    #[test]
-    fn parses_details_command() {
-        let args = vec!["pup".to_string(), "details".to_string()];
-        assert_eq!(parse_command(&args).unwrap(), AppCommand::Details);
-    }
-
-    #[test]
-    fn rejects_unknown_commands() {
+    fn rejects_unsupported_commands() {
         let args = vec!["pup".to_string(), "unknown".to_string()];
-        let error = parse_command(&args).unwrap_err();
-        assert!(error.contains("unknown command"));
+        let error = resolve_welcome_mode(&args).unwrap_err();
+
+        assert!(error.contains("unsupported command"));
     }
 }

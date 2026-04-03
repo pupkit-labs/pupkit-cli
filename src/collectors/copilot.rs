@@ -20,8 +20,7 @@ const API_CONNECT_TIMEOUT_SECS: &str = "2";
 
 pub fn collect_copilot_usage_summary() -> CopilotUsageSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
-    let mut summary =
-        collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now());
+    let mut summary = collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now());
 
     let quota = fetch_copilot_api_quota(&mut default_runner);
     if let Some(ref q) = quota {
@@ -177,10 +176,7 @@ fn process_events_file(
     }
 
     if !session_model.is_empty() {
-        let is_newer = match (
-            &aggregate.latest_activity_at,
-            file_mtime,
-        ) {
+        let is_newer = match (&aggregate.latest_activity_at, file_mtime) {
             (Some(latest), Some(mtime)) => mtime >= *latest,
             (None, Some(_)) => true,
             _ => false,
@@ -442,7 +438,9 @@ mod tests {
     }
 
     fn recent_event(event_type: &str) -> String {
-        format!(r#"{{"type":"{event_type}","data":{{"model":"claude-sonnet-4.6"}},"timestamp":"2027-01-14T02:13:20.000Z"}}"#)
+        format!(
+            r#"{{"type":"{event_type}","data":{{"model":"claude-sonnet-4.6"}},"timestamp":"2027-01-14T02:13:20.000Z"}}"#
+        )
     }
 
     fn sample_api_response() -> &'static str {
@@ -499,10 +497,7 @@ mod tests {
     #[test]
     fn reads_plan_type_from_config() {
         let home = TestDir::new("copilot-plan");
-        home.write_file(
-            ".copilot/config.json",
-            r#"{"plan_type": "Individual"}"#,
-        );
+        home.write_file(".copilot/config.json", r#"{"plan_type": "Individual"}"#);
         let summary = collect_copilot_usage_summary_with_home(Some(&home.path), fixed_now());
         assert_eq!(summary.plan_type, "Individual");
     }
@@ -532,23 +527,18 @@ mod tests {
     #[test]
     fn fetch_returns_none_when_runner_fails() {
         let mut runner = |_program: &str, _args: &[&str]| -> Option<String> { None };
-        let result = super::fetch_copilot_api_quota_from_url(
-            &mut runner,
-            "http://localhost:9999/usage",
-        );
+        let result =
+            super::fetch_copilot_api_quota_from_url(&mut runner, "http://localhost:9999/usage");
         assert!(result.is_none());
     }
 
     #[test]
     fn fetch_parses_runner_output() {
         let body = sample_api_response().to_string();
-        let mut runner = move |_program: &str, _args: &[&str]| -> Option<String> {
-            Some(body.clone())
-        };
-        let result = super::fetch_copilot_api_quota_from_url(
-            &mut runner,
-            "http://localhost:1414/usage",
-        );
+        let mut runner =
+            move |_program: &str, _args: &[&str]| -> Option<String> { Some(body.clone()) };
+        let result =
+            super::fetch_copilot_api_quota_from_url(&mut runner, "http://localhost:1414/usage");
         assert!(result.is_some());
         assert_eq!(result.unwrap().plan, "business");
     }
