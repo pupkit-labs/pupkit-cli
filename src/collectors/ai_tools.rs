@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,7 +6,6 @@ use crate::model::AiToolsSummary;
 
 const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.4";
-const EMPTY_SKILLS_LABEL: &str = "(none)";
 
 pub fn collect_ai_tools_summary() -> AiToolsSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
@@ -17,9 +15,7 @@ pub fn collect_ai_tools_summary() -> AiToolsSummary {
 fn collect_ai_tools_summary_with_home(home: Option<&Path>) -> AiToolsSummary {
     AiToolsSummary {
         claude_model: detect_claude_model(home),
-        claude_skills: detect_claude_skills(home),
         codex_model: detect_codex_model(home),
-        codex_skills: detect_codex_skills(home),
     }
 }
 
@@ -37,54 +33,9 @@ fn detect_codex_model(home: Option<&Path>) -> String {
         .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string())
 }
 
-fn detect_claude_skills(home: Option<&Path>) -> String {
-    collect_skill_names(home, &[".claude/settings/skills", ".claude/skills"])
-}
-
-fn detect_codex_skills(home: Option<&Path>) -> String {
-    collect_skill_names(home, &[".codex/skills"])
-}
-
 fn read_home_file(home: Option<&Path>, relative_path: &str) -> Option<String> {
     let home = home?;
     fs::read_to_string(home.join(relative_path)).ok()
-}
-
-fn collect_skill_names(home: Option<&Path>, relative_paths: &[&str]) -> String {
-    let Some(home) = home else {
-        return EMPTY_SKILLS_LABEL.to_string();
-    };
-
-    let mut names = BTreeSet::new();
-
-    for relative_path in relative_paths {
-        let directory = home.join(relative_path);
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let name = entry.file_name().to_string_lossy().trim().to_string();
-            if name.is_empty() || name.starts_with('.') {
-                continue;
-            }
-
-            names.insert(name);
-        }
-    }
-
-    if names.is_empty() {
-        EMPTY_SKILLS_LABEL.to_string()
-    } else {
-        names.into_iter().collect::<Vec<_>>().join(", ")
-    }
 }
 
 fn parse_json_string_value(content: &str, key: &str) -> Option<String> {
@@ -181,10 +132,6 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
         }
-
-        fn create_dir(&self, relative_path: &str) {
-            std::fs::create_dir_all(self.path.join(relative_path)).unwrap();
-        }
     }
 
     impl Drop for TestDir {
@@ -194,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn collects_models_and_skills_from_home_layout() {
+    fn collects_models_from_home_layout() {
         let home = TestDir::new("ai-tools");
         home.write_file(
             ".claude/settings.json",
@@ -211,19 +158,11 @@ model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 "#,
         );
-        home.create_dir(".claude/settings/skills/research");
-        home.create_dir(".claude/skills/ship");
-        home.create_dir(".claude/skills/.hidden");
-        home.create_dir(".claude/skills/research");
-        home.create_dir(".codex/skills/review");
-        home.create_dir(".codex/skills/.system");
 
         let summary = collect_ai_tools_summary_with_home(Some(home.path.as_path()));
 
         assert_eq!(summary.claude_model, "MiniMax-M2.5");
         assert_eq!(summary.codex_model, "gpt-5.4-mini");
-        assert_eq!(summary.claude_skills, "research, ship");
-        assert_eq!(summary.codex_skills, "review");
     }
 
     #[test]
@@ -234,7 +173,5 @@ model_reasoning_effort = "high"
 
         assert_eq!(summary.claude_model, "claude-sonnet-4-6");
         assert_eq!(summary.codex_model, "gpt-5.4");
-        assert_eq!(summary.claude_skills, "(none)");
-        assert_eq!(summary.codex_skills, "(none)");
     }
 }
