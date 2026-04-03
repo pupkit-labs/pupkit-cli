@@ -1,16 +1,30 @@
+mod auth;
 mod welcome;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    let explicit_welcome = resolve_welcome_mode(&args)?;
-    welcome::execute(explicit_welcome)
+    match parse_command(&args)? {
+        Command::Welcome { explicit } => welcome::execute(explicit),
+        Command::Auth => auth::execute(),
+    }
 }
 
-fn resolve_welcome_mode(args: &[String]) -> Result<bool, String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Command {
+    Welcome { explicit: bool },
+    Auth,
+}
+
+fn parse_command(args: &[String]) -> Result<Command, String> {
     match args.get(1).map(String::as_str) {
-        None => Ok(false),
-        Some("welcome") if args.len() == 2 => Ok(true),
+        None => Ok(Command::Welcome { explicit: false }),
+        Some("welcome") if args.len() == 2 => Ok(Command::Welcome { explicit: true }),
         Some("welcome") => Err(format!(
             "welcome does not take additional arguments\n\n{}",
+            usage_text(&program_name(args))
+        )),
+        Some("auth") if args.len() == 2 => Ok(Command::Auth),
+        Some("auth") => Err(format!(
+            "auth does not take additional arguments\n\n{}",
             usage_text(&program_name(args))
         )),
         Some(other) => Err(format!(
@@ -23,7 +37,7 @@ fn resolve_welcome_mode(args: &[String]) -> Result<bool, String> {
 fn program_name(args: &[String]) -> String {
     args.first()
         .map(String::as_str)
-        .unwrap_or("pup-cli-start-rust")
+        .unwrap_or("pupkit")
         .to_string()
 }
 
@@ -31,25 +45,37 @@ fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [welcome]
+  {program} [welcome|auth]
 "
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_welcome_mode;
+    use super::{Command, parse_command};
 
     #[test]
     fn defaults_to_implicit_welcome_when_no_command_is_passed() {
         let args = vec!["pup".to_string()];
-        assert!(!resolve_welcome_mode(&args).unwrap());
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Welcome { explicit: false }
+        );
     }
 
     #[test]
     fn parses_explicit_welcome_command() {
         let args = vec!["pup".to_string(), "welcome".to_string()];
-        assert!(resolve_welcome_mode(&args).unwrap());
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Welcome { explicit: true }
+        );
+    }
+
+    #[test]
+    fn parses_auth_command() {
+        let args = vec!["pup".to_string(), "auth".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::Auth);
     }
 
     #[test]
@@ -59,15 +85,23 @@ mod tests {
             "welcome".to_string(),
             "--extra".to_string(),
         ];
-        let error = resolve_welcome_mode(&args).unwrap_err();
+        let error = parse_command(&args).unwrap_err();
 
         assert!(error.contains("welcome does not take additional arguments"));
     }
 
     #[test]
+    fn rejects_additional_auth_arguments() {
+        let args = vec!["pup".to_string(), "auth".to_string(), "--extra".to_string()];
+        let error = parse_command(&args).unwrap_err();
+
+        assert!(error.contains("auth does not take additional arguments"));
+    }
+
+    #[test]
     fn rejects_unsupported_commands() {
         let args = vec!["pup".to_string(), "unknown".to_string()];
-        let error = resolve_welcome_mode(&args).unwrap_err();
+        let error = parse_command(&args).unwrap_err();
 
         assert!(error.contains("unsupported command"));
     }
