@@ -39,6 +39,50 @@ cargo build --release
 ./target/release/pupkit welcome
 ```
 
+## 终端集成 💻
+
+下面这套配置适用于 Terminal.app、iTerm2、Warp、VS Code Terminal 这类常见终端。
+
+如果你是通过 Homebrew 或 shell installer 安装的，`pupkit` 通常已经在 `PATH` 里，可以直接使用。
+
+如果你是从源码构建，或者想手动安装，可以把二进制放到 `~/.local/bin`：
+
+```sh
+mkdir -p ~/.local/bin
+cp ./target/release/pupkit ~/.local/bin/pupkit
+```
+
+### zsh / bash
+
+把下面这行加到 `~/.zshrc` 或 `~/.bashrc`：
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+如果你希望每次打开新的交互终端时自动显示 welcome，可以再加上：
+
+```sh
+command -v pupkit >/dev/null && pupkit welcome
+```
+
+### fish
+
+把 `~/.local/bin` 加到 `PATH`：
+
+```fish
+fish_add_path $HOME/.local/bin
+```
+
+如果你希望每次打开新的交互终端时自动显示 welcome，把下面内容加到 `~/.config/fish/config.fish`：
+
+```fish
+if status is-interactive
+    and type -q pupkit
+    pupkit welcome
+end
+```
+
 ## 快速开始 ⚡
 
 直接渲染欢迎页：
