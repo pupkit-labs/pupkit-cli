@@ -1,20 +1,9 @@
 # Deterministic render fixture shared by snapshot tests.
 timestamp=2026-03-27 18:10
 user_label=liupx
-host_label=liupx-host
-current_dir=~/git/pup-cli-start-rust
-system.os_label=macOS 15.0 (arm64)
-system.load_label=1分 1.20 · 5分 1.10 · 15分 1.00
 system.host_label=liupx-host
-system.disk_label=█████░░░░░ 已用 120Gi / 总量 245Gi (49%)
-system.cpu_label=Apple Silicon (arm64)
-system.shell_label=zsh 5.9
-system.memory_label=12.0 GiB used / 24.0 GiB total / 12.0 GiB avail
 system.public_ip.address=149.28.91.67
 system.public_ip.country_label=United States
 system.proxy_label=已启用 (ENV)
-system.uptime_label=5 days, 3:01
 ai_tools.claude_model=claude-sonnet-4-6
-ai_tools.claude_skills=refactor, review
 ai_tools.codex_model=gpt-5.4
-ai_tools.codex_skills=openai-docs
