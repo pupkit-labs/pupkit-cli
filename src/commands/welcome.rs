@@ -1,5 +1,5 @@
 use crate::collectors::system::collect_welcome_snapshot;
-use crate::render::render_welcome;
+use crate::render::render_welcome_slim;
 use crate::shell;
 
 pub fn execute(explicit: bool) -> Result<(), String> {
@@ -8,7 +8,7 @@ pub fn execute(explicit: bool) -> Result<(), String> {
     }
 
     let snapshot = collect_welcome_snapshot();
-    print!("{}", render_welcome(&snapshot));
+    print!("{}", render_welcome_slim(&snapshot));
     Ok(())
 }
 
