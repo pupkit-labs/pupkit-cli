@@ -130,9 +130,3 @@ Release artifacts are published through:
 
 - GitHub Releases: `https://github.com/pupkit-labs/pupkit-cli/releases`
 - Homebrew tap: `pupkit-labs/homebrew-tap`
-
-To publish Homebrew formula updates from GitHub Actions, the repository `pupkit-labs/pupkit-cli` must define:
-
-- `HOMEBREW_TAP_TOKEN`
-
-This token should have write access to `pupkit-labs/homebrew-tap`.
