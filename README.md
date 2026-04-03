@@ -136,7 +136,3 @@ To publish Homebrew formula updates from GitHub Actions, the repository `pupkit-
 - `HOMEBREW_TAP_TOKEN`
 
 This token should have write access to `pupkit-labs/homebrew-tap`.
-
-## Status 📌
-
-`pupkit` is currently scoped to a minimal welcome-only CLI. The data collectors remain only where they are needed to render the welcome screen.

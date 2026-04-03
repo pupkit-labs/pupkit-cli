@@ -136,7 +136,3 @@ dist manifest --output-format=json --no-local-paths
 - `HOMEBREW_TAP_TOKEN`
 
 这个 token 需要对 `pupkit-labs/homebrew-tap` 具有写权限。
-
-## 当前状态 📌
-
-`pupkit` 当前刻意收口为一个最小 welcome-only CLI。仓库中的数据采集逻辑仅保留欢迎页真正需要的部分。
