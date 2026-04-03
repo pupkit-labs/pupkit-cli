@@ -1,4 +1,4 @@
-# pup-cli-start-rust
+# pupkit
 
 把当前基于 Zsh 的欢迎页脚本能力沉淀为可维护、可测试、可发布的 Rust CLI。
 
@@ -20,6 +20,8 @@
 - 所有文件缓存统一写入 `~/.local/share/pupkit/github_token`
 - 如需在欢迎页链路里按需触发认证，可在交互终端下设置 `PUP_COPILOT_DEVICE_AUTH=1` 后运行 welcome；如需强制重新认证，直接运行 `cargo run -- auth`
 - 仓库内保留 welcome 宽终端 / 窄终端 snapshot 回归
+
+发布与分发说明见 [docs/setup/release-distribution.md](docs/setup/release-distribution.md)。
 
 当前仍待补齐：
 

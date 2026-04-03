@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, IsTerminal};
+use std::process::Command;
 
 use crate::model::{
     AiToolsSummary, AiUsageSummary, CopilotQuotaEntry, CopilotUsageSummary, RateLimitWindow,
@@ -13,11 +14,35 @@ const ANSI_RESET: &str = "\u{1b}[0m";
 const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;5;151m";
 const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;5;223m";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalTimeContext {
+    offset_minutes: i32,
+    offset_label: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SimpleDateTime {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+}
+
 pub fn render_welcome_slim(snapshot: &WelcomeSnapshot) -> String {
     render_welcome_slim_with_width(snapshot, resolve_total_width())
 }
 
 fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
+    let local_time = resolve_local_time_context();
+    render_welcome_slim_with_width_and_context(snapshot, total_width, &local_time)
+}
+
+fn render_welcome_slim_with_width_and_context(
+    snapshot: &WelcomeSnapshot,
+    total_width: usize,
+    local_time: &LocalTimeContext,
+) -> String {
     let mut output = String::new();
 
     output.push('\n');
@@ -38,6 +63,7 @@ fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize
         &snapshot.ai_usage,
         &snapshot.copilot,
         total_width,
+        local_time,
     );
     let separator = ai_section.lines().next().unwrap_or("").to_string();
     let public_ip_label = snapshot.system.public_ip.display_label();
@@ -54,7 +80,8 @@ fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize
 }
 
 fn render_network_kv(ip_label: &str, proxy_label: &str) -> String {
-    let key_width = 5;
+    let ip_key_width = 2;
+    let proxy_key_width = 5;
     let proxy_highlighted = if can_use_ansi_color() {
         let style = if proxy_label.trim_start().starts_with("已启用") {
             Some(PROXY_ENABLED_STYLE)
@@ -73,7 +100,7 @@ fn render_network_kv(ip_label: &str, proxy_label: &str) -> String {
     };
 
     format!(
-        "  {:<key_width$}  {}    {:<key_width$}  {}\n",
+        "  {:<ip_key_width$}  {}    {:<proxy_key_width$}  {}\n",
         "IP", ip_label, "Proxy", proxy_highlighted,
     )
 }
@@ -83,6 +110,7 @@ fn render_ai_slim_section(
     usage: &AiUsageSummary,
     copilot: &CopilotUsageSummary,
     total_width: usize,
+    local_time: &LocalTimeContext,
 ) -> String {
     let claude_24h = format_token_breakdown_compact(&usage.claude.last_24h);
     let last_7d = &usage.claude.last_7d;
@@ -119,11 +147,12 @@ fn render_ai_slim_section(
     }
 
     let codex_primary_label = format_limit_label(&usage.codex.primary_rate_limit);
-    let codex_primary_value = format_rate_limit_value_slim(usage, &usage.codex.primary_rate_limit)
-        .unwrap_or_else(|| "-".to_string());
+    let codex_primary_value =
+        format_rate_limit_value_slim(usage, &usage.codex.primary_rate_limit, local_time)
+            .unwrap_or_else(|| "-".to_string());
     let codex_secondary_label = format_limit_label(&usage.codex.secondary_rate_limit);
     let codex_secondary_value =
-        format_rate_limit_value_slim(usage, &usage.codex.secondary_rate_limit)
+        format_rate_limit_value_slim(usage, &usage.codex.secondary_rate_limit, local_time)
             .unwrap_or_else(|| "-".to_string());
 
     let copilot_req_str = copilot.total_requests.map(|value| {
@@ -180,7 +209,7 @@ fn render_ai_slim_section(
         .map(display_width)
         .unwrap_or(total_width);
     let separator: String = (0..table_width)
-        .map(|index| if index % 2 == 0 { '=' } else { '+' })
+        .map(|index| if index % 2 == 0 { '~' } else { '+' })
         .collect();
 
     format!("{separator}\n{table}")
@@ -478,10 +507,11 @@ fn format_token_breakdown_compact(value: &TokenBreakdown) -> String {
 fn format_rate_limit_value_slim(
     summary: &AiUsageSummary,
     window: &RateLimitWindow,
+    local_time: &LocalTimeContext,
 ) -> Option<String> {
     let used_percent = window.used_percent?;
     let remaining_percent = 100_u8.saturating_sub(used_percent);
-    let reset_label = format_rate_limit_reset(&window.resets_at, &summary.codex.last_active_at);
+    let reset_label = format_rate_limit_reset(window, &summary.codex.last_active_at, local_time);
 
     Some(format!(
         "[{}] {}% left\n{}",
@@ -522,62 +552,216 @@ fn format_remaining_bar(remaining_percent: u8, slots: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(slots - filled))
 }
 
-fn format_rate_limit_reset(resets_at: &str, last_active_at: &str) -> String {
-    let Some((reset_date, reset_time)) = parse_rendered_utc_timestamp(resets_at) else {
-        return if resets_at == "-" {
+fn format_rate_limit_reset(
+    window: &RateLimitWindow,
+    last_active_at: &str,
+    local_time: &LocalTimeContext,
+) -> String {
+    let Some(reset_local) = localize_rate_limit_reset(window, local_time) else {
+        return if window.resets_at == "-" {
             "resets unknown".to_string()
         } else {
-            format!("resets {resets_at}")
+            format!("resets {}", window.resets_at)
         };
     };
-    let active_date = parse_rendered_utc_timestamp(last_active_at).map(|(date, _)| date);
+    let active_local = parse_rendered_utc_timestamp(last_active_at)
+        .and_then(utc_datetime_to_epoch_secs)
+        .map(|epoch_secs| local_datetime_from_epoch_secs(epoch_secs, local_time.offset_minutes));
 
-    if active_date.as_deref() == Some(reset_date.as_str()) {
-        format!("resets {reset_time} UTC")
+    if active_local
+        .map(|active| (active.year, active.month, active.day))
+        == Some((reset_local.year, reset_local.month, reset_local.day))
+    {
+        format!(
+            "resets {:02}:{:02} {}",
+            reset_local.hour, reset_local.minute, local_time.offset_label
+        )
     } else {
         format!(
-            "resets {} UTC on {}",
-            reset_time,
-            format_short_date(&reset_date)
+            "resets {:02}:{:02} {} on {}",
+            reset_local.hour,
+            reset_local.minute,
+            local_time.offset_label,
+            format_short_date_parts(reset_local.month, reset_local.day)
         )
     }
 }
 
-fn parse_rendered_utc_timestamp(value: &str) -> Option<(String, String)> {
-    let stripped = value.trim().strip_suffix(" UTC")?;
-    let (date, time) = stripped.split_once(' ')?;
-    Some((date.to_string(), time.to_string()))
+fn localize_rate_limit_reset(
+    window: &RateLimitWindow,
+    local_time: &LocalTimeContext,
+) -> Option<SimpleDateTime> {
+    if let Some(epoch_secs) = window.resets_at_epoch_secs {
+        return Some(local_datetime_from_epoch_secs(
+            epoch_secs as i64,
+            local_time.offset_minutes,
+        ));
+    }
+
+    parse_rendered_utc_timestamp(&window.resets_at)
+        .and_then(utc_datetime_to_epoch_secs)
+        .map(|epoch_secs| local_datetime_from_epoch_secs(epoch_secs, local_time.offset_minutes))
 }
 
-fn format_short_date(date: &str) -> String {
-    let mut parts = date.split('-');
-    let Some(_) = parts.next() else {
-        return date.to_string();
-    };
-    let Some(month) = parts.next() else {
-        return date.to_string();
-    };
-    let Some(day) = parts.next() else {
-        return date.to_string();
-    };
+fn parse_rendered_utc_timestamp(value: &str) -> Option<SimpleDateTime> {
+    let stripped = value.trim().strip_suffix(" UTC")?;
+    let (date, time) = stripped.split_once(' ')?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i32>().ok()?;
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let day = date_parts.next()?.parse::<u32>().ok()?;
+    let (hour, minute) = time.split_once(':')?;
 
+    Some(SimpleDateTime {
+        year,
+        month,
+        day,
+        hour: hour.parse::<u32>().ok()?,
+        minute: minute.parse::<u32>().ok()?,
+    })
+}
+
+fn format_short_date_parts(month: u32, day: u32) -> String {
     let month = match month {
-        "01" => "Jan",
-        "02" => "Feb",
-        "03" => "Mar",
-        "04" => "Apr",
-        "05" => "May",
-        "06" => "Jun",
-        "07" => "Jul",
-        "08" => "Aug",
-        "09" => "Sep",
-        "10" => "Oct",
-        "11" => "Nov",
-        "12" => "Dec",
-        _ => return date.to_string(),
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => return format!("{day}"),
     };
 
-    format!("{} {month}", day.trim_start_matches('0'))
+    format!("{day} {month}")
+}
+
+fn resolve_local_time_context() -> LocalTimeContext {
+    let offset_minutes = detect_local_utc_offset_minutes().unwrap_or(0);
+
+    LocalTimeContext {
+        offset_minutes,
+        offset_label: format_utc_offset_label(offset_minutes),
+    }
+}
+
+fn detect_local_utc_offset_minutes() -> Option<i32> {
+    run_command("date", &["+%z"]).and_then(|value| parse_utc_offset_minutes(&value))
+}
+
+fn parse_utc_offset_minutes(value: &str) -> Option<i32> {
+    let trimmed = value.trim();
+    let sign = match trimmed.chars().next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
+    };
+    let digits = trimmed.trim_start_matches(['+', '-']);
+    if digits.len() != 4 {
+        return None;
+    }
+
+    let hours = digits[..2].parse::<i32>().ok()?;
+    let minutes = digits[2..].parse::<i32>().ok()?;
+
+    Some(sign * (hours * 60 + minutes))
+}
+
+fn format_utc_offset_label(offset_minutes: i32) -> String {
+    if offset_minutes == 0 {
+        return "UTC".to_string();
+    }
+
+    let sign = if offset_minutes >= 0 { '+' } else { '-' };
+    let absolute = offset_minutes.abs();
+    let hours = absolute / 60;
+    let minutes = absolute % 60;
+
+    format!("UTC{sign}{hours:02}:{minutes:02}")
+}
+
+fn utc_datetime_to_epoch_secs(datetime: SimpleDateTime) -> Option<i64> {
+    if datetime.month == 0
+        || datetime.month > 12
+        || datetime.day == 0
+        || datetime.day > 31
+        || datetime.hour > 23
+        || datetime.minute > 59
+    {
+        return None;
+    }
+
+    let days = days_from_civil(datetime.year, datetime.month, datetime.day);
+    Some(days * 86_400 + i64::from(datetime.hour) * 3_600 + i64::from(datetime.minute) * 60)
+}
+
+fn local_datetime_from_epoch_secs(epoch_secs: i64, offset_minutes: i32) -> SimpleDateTime {
+    let localized_secs = epoch_secs + i64::from(offset_minutes) * 60;
+    let days = localized_secs.div_euclid(86_400);
+    let seconds_of_day = localized_secs.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+
+    SimpleDateTime {
+        year,
+        month,
+        day,
+        hour: (seconds_of_day / 3_600) as u32,
+        minute: ((seconds_of_day % 3_600) / 60) as u32,
+    }
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let adjusted_year = year - if month <= 2 { 1 } else { 0 };
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let adjusted_month = month as i32 + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * adjusted_month + 2) / 5 + day as i32 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+    i64::from(era) * 146_097 + i64::from(day_of_era) - 719_468
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+    let shifted_days = days_since_epoch + 719_468;
+    let era = if shifted_days >= 0 {
+        shifted_days
+    } else {
+        shifted_days - 146_096
+    } / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i32 + era as i32 * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_piece = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_piece + 2) / 5 + 1;
+    let month = month_piece + if month_piece < 10 { 3 } else { -9 };
+
+    (year + if month <= 2 { 1 } else { 0 }, month as u32, day as u32)
+}
+
+fn run_command(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8(output.stdout).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 fn format_compact_number(value: u64) -> String {
@@ -632,17 +816,28 @@ fn format_number(value: u64) -> String {
 mod tests {
     use std::collections::HashMap;
 
-    use super::render_welcome_slim_with_width;
+    use super::render_welcome_slim_with_width_and_context;
     use super::*;
     use crate::model::{
         ClaudeUsageSummary, CodexUsageSummary, PublicIpSource, PublicIpSummary, SystemSummary,
         UsageAvailability,
     };
 
+    fn sample_local_time_context() -> LocalTimeContext {
+        LocalTimeContext {
+            offset_minutes: 8 * 60,
+            offset_label: "UTC+08:00".to_string(),
+        }
+    }
+
     #[test]
     fn welcome_slim_render_matches_wide_snapshot() {
         let snapshot = sample_welcome_snapshot();
-        let output = render_welcome_slim_with_width(&snapshot, 100);
+        let output = render_welcome_slim_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+        );
 
         assert_eq!(
             normalize_snapshot(&output),
@@ -653,7 +848,8 @@ mod tests {
     #[test]
     fn welcome_slim_render_matches_narrow_snapshot() {
         let snapshot = sample_welcome_snapshot();
-        let output = render_welcome_slim_with_width(&snapshot, 60);
+        let output =
+            render_welcome_slim_with_width_and_context(&snapshot, 60, &sample_local_time_context());
 
         assert_eq!(
             normalize_snapshot(&output),

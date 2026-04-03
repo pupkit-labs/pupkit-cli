@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pup-cli-start-rust"
-version = "0.2.0"
+name = "pupkit"
+version = "0.0.1"
 dependencies = [
  "serde_json",
 ]
