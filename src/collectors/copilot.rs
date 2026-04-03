@@ -1,37 +1,87 @@
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::model::{CopilotQuotaEntry, CopilotQuotaInfo, CopilotUsageSummary, UsageAvailability};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
-const HINT: &str = "Run /usage in Copilot CLI for quota details";
+const HINT: &str = "Set PUP_GITHUB_TOKEN or run `pupkit auth` to fetch Copilot quota details";
 const DAY_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
 const EVENT_TURN_START: &str = "assistant.turn_start";
 const EVENT_MESSAGE: &str = "assistant.message";
-const DEFAULT_API_PORT: u16 = 1414;
-const API_TIMEOUT_SECS: &str = "5";
-const API_CONNECT_TIMEOUT_SECS: &str = "2";
+const GITHUB_BASE_URL: &str = "https://github.com";
+const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+const GITHUB_APP_SCOPES: &str = "read:user";
+const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
+const USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
+const API_VERSION: &str = "2025-04-01";
+const VSCODE_VERSION: &str = "1.104.3";
+const CURL_CONNECT_TIMEOUT_SECS: &str = "2";
+const CURL_MAX_TIME_SECS: &str = "10";
+const DEVICE_AUTH_ENV: &str = "PUP_COPILOT_DEVICE_AUTH";
+const PUP_GITHUB_TOKEN_ENV: &str = "PUP_GITHUB_TOKEN";
+const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
+const GH_TOKEN_ENV: &str = "GH_TOKEN";
+const PUPKIT_GITHUB_TOKEN_PATH: &str = ".local/share/pupkit/github_token";
+const PROXY_ENV_KEYS: [&str; 6] = [
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+];
 
 pub fn collect_copilot_usage_summary() -> CopilotUsageSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut summary = collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now());
 
-    let quota = fetch_copilot_api_quota(&mut default_runner);
-    if let Some(ref q) = quota {
-        summary.plan_type = q.plan.clone();
+    if let Some(quota) = fetch_copilot_quota(home.as_deref()) {
+        summary.plan_type = quota.plan.clone();
         summary.availability = match summary.availability {
             UsageAvailability::Unavailable => UsageAvailability::Partial,
             other => other,
         };
+        summary.quota = Some(quota);
     }
-    summary.quota = quota;
+
     summary
+}
+
+pub fn run_github_auth_flow() -> Result<PathBuf, String> {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set; cannot determine token cache path".to_string())?;
+
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Err("auth command requires an interactive terminal".to_string());
+    }
+
+    let device_code =
+        request_device_code().ok_or_else(|| "failed to request GitHub device code".to_string())?;
+    eprintln!(
+        "Copilot auth required. Open {} and enter code {}.",
+        device_code.verification_uri, device_code.user_code
+    );
+    let _ = io::stderr().flush();
+
+    let token = poll_access_token(&device_code)
+        .ok_or_else(|| "failed to complete GitHub device authorization".to_string())?;
+    let token_path = primary_github_token_path(Some(home.as_path()))
+        .ok_or_else(|| "failed to determine pupkit token cache path".to_string())?;
+    write_github_token_cache(Some(home.as_path()), &token)
+        .ok_or_else(|| "failed to write GitHub token cache".to_string())?;
+
+    Ok(token_path)
 }
 
 fn collect_copilot_usage_summary_with_home(
@@ -43,7 +93,6 @@ fn collect_copilot_usage_summary_with_home(
     };
 
     let sessions_dir = home.join(".copilot/session-state");
-
     let mut aggregate = CopilotAggregate::default();
 
     if sessions_dir.is_dir() {
@@ -57,7 +106,6 @@ fn collect_copilot_usage_summary_with_home(
     };
 
     let plan_type = detect_plan_type(home);
-
     let availability = if aggregate.total_requests > 0 {
         UsageAvailability::Live
     } else if sessions_dir.is_dir() {
@@ -99,6 +147,23 @@ struct CopilotAggregate {
     total_sessions: u64,
     latest_model: String,
     latest_activity_at: Option<SystemTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PollAccessTokenStatus {
+    Authorized(String),
+    Pending,
+    SlowDown,
+    Failed,
 }
 
 fn scan_sessions_dir(dir: &Path, now: SystemTime, aggregate: &mut CopilotAggregate) {
@@ -155,13 +220,13 @@ fn process_events_file(
         let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match event_type {
-            t if t == EVENT_TURN_START => {
+            EVENT_TURN_START => {
                 aggregate.total_requests += 1;
                 if in_last_24h {
                     aggregate.last_24h_requests += 1;
                 }
             }
-            t if t == EVENT_MESSAGE => {
+            EVENT_MESSAGE => {
                 if let Some(model) = value
                     .get("data")
                     .and_then(|d| d.get("model"))
@@ -266,47 +331,229 @@ fn unavailable_summary() -> CopilotUsageSummary {
     }
 }
 
-fn default_runner(program: &str, args: &[&str]) -> Option<String> {
-    Command::new(program)
-        .args(args)
-        .output()
+fn fetch_copilot_quota(home: Option<&Path>) -> Option<CopilotQuotaInfo> {
+    let token = ensure_github_token(home)?;
+    let body = fetch_copilot_usage_body(&token)?;
+    parse_copilot_api_response(&body)
+}
+
+fn ensure_github_token(home: Option<&Path>) -> Option<String> {
+    read_github_token_from_sources(home).or_else(|| authenticate_github_token(home))
+}
+
+fn read_github_token_from_sources(home: Option<&Path>) -> Option<String> {
+    read_token_env(PUP_GITHUB_TOKEN_ENV)
+        .or_else(|| read_token_env(GITHUB_TOKEN_ENV))
+        .or_else(|| read_token_env(GH_TOKEN_ENV))
+        .or_else(|| read_github_token_file(primary_github_token_path(home).as_deref()))
+}
+
+fn read_token_env(key: &str) -> Option<String> {
+    env::var(key)
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
-fn copilot_api_url() -> String {
-    let port = env::var("PUP_COPILOT_API_PORT")
+fn read_github_token_file(path: Option<&Path>) -> Option<String> {
+    let path = path?;
+    fs::read_to_string(path)
         .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_API_PORT);
-    format!("http://localhost:{port}/usage")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
-fn fetch_copilot_api_quota(
-    runner: &mut impl FnMut(&str, &[&str]) -> Option<String>,
-) -> Option<CopilotQuotaInfo> {
-    let url = copilot_api_url();
-    fetch_copilot_api_quota_from_url(runner, &url)
+fn authenticate_github_token(home: Option<&Path>) -> Option<String> {
+    if !should_attempt_device_auth() {
+        return None;
+    }
+
+    let device_code = request_device_code()?;
+    eprintln!(
+        "Copilot auth required. Open {} and enter code {}.",
+        device_code.verification_uri, device_code.user_code
+    );
+    let _ = io::stderr().flush();
+
+    let token = poll_access_token(&device_code)?;
+    let _ = write_github_token_cache(home, &token);
+    Some(token)
 }
 
-fn fetch_copilot_api_quota_from_url(
-    runner: &mut impl FnMut(&str, &[&str]) -> Option<String>,
-    url: &str,
-) -> Option<CopilotQuotaInfo> {
-    let body = runner(
-        "curl",
-        &[
-            "-fsSL",
-            "--connect-timeout",
-            API_CONNECT_TIMEOUT_SECS,
-            "--max-time",
-            API_TIMEOUT_SECS,
-            url,
-        ],
+fn should_attempt_device_auth() -> bool {
+    env_flag_is_truthy(DEVICE_AUTH_ENV) && io::stdin().is_terminal() && io::stderr().is_terminal()
+}
+
+fn env_flag_is_truthy(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .is_some_and(|value| is_truthy_value(&value))
+}
+
+fn is_truthy_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn primary_github_token_path(home: Option<&Path>) -> Option<PathBuf> {
+    Some(home?.join(PUPKIT_GITHUB_TOKEN_PATH))
+}
+
+fn write_github_token_cache(home: Option<&Path>, token: &str) -> Option<()> {
+    let path = primary_github_token_path(home)?;
+    let parent = path.parent()?;
+    fs::create_dir_all(parent).ok()?;
+    fs::write(&path, token).ok()?;
+    #[cfg(unix)]
+    {
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Some(())
+}
+
+fn request_device_code() -> Option<DeviceCodeResponse> {
+    let body = run_curl_json_request(
+        "POST",
+        &format!("{GITHUB_BASE_URL}/login/device/code"),
+        &standard_headers(),
+        Some(json!({
+            "client_id": GITHUB_CLIENT_ID,
+            "scope": GITHUB_APP_SCOPES,
+        })),
     )?;
 
-    parse_copilot_api_response(&body)
+    parse_device_code_response(&body)
+}
+
+fn poll_access_token(device_code: &DeviceCodeResponse) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(device_code.expires_in);
+    let mut sleep_secs = device_code.interval.saturating_add(1);
+
+    while Instant::now() < deadline {
+        let body = run_curl_json_request(
+            "POST",
+            &format!("{GITHUB_BASE_URL}/login/oauth/access_token"),
+            &standard_headers(),
+            Some(json!({
+                "client_id": GITHUB_CLIENT_ID,
+                "device_code": device_code.device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            })),
+        )?;
+
+        match parse_access_token_poll_response(&body) {
+            PollAccessTokenStatus::Authorized(token) => return Some(token),
+            PollAccessTokenStatus::Pending => {}
+            PollAccessTokenStatus::SlowDown => {
+                sleep_secs = sleep_secs.saturating_add(5);
+            }
+            PollAccessTokenStatus::Failed => return None,
+        }
+
+        thread::sleep(Duration::from_secs(sleep_secs));
+    }
+
+    None
+}
+
+fn fetch_copilot_usage_body(token: &str) -> Option<String> {
+    let mut headers = github_headers(token);
+    headers.push(format!("editor-version: vscode/{VSCODE_VERSION}"));
+    run_curl_json_request(
+        "GET",
+        &format!("{GITHUB_API_BASE_URL}/copilot_internal/user"),
+        &headers,
+        None,
+    )
+}
+
+fn standard_headers() -> Vec<String> {
+    vec![
+        "accept: application/json".to_string(),
+        "content-type: application/json".to_string(),
+    ]
+}
+
+fn github_headers(token: &str) -> Vec<String> {
+    let mut headers = standard_headers();
+    headers.push(format!("authorization: token {token}"));
+    headers.push(format!("editor-plugin-version: {EDITOR_PLUGIN_VERSION}"));
+    headers.push(format!("user-agent: {USER_AGENT}"));
+    headers.push(format!("x-github-api-version: {API_VERSION}"));
+    headers.push("x-vscode-user-agent-library-version: electron-fetch".to_string());
+    headers
+}
+
+fn run_curl_json_request(
+    method: &str,
+    url: &str,
+    headers: &[String],
+    body: Option<Value>,
+) -> Option<String> {
+    let mut args = vec![
+        "-fsSL".to_string(),
+        "--connect-timeout".to_string(),
+        CURL_CONNECT_TIMEOUT_SECS.to_string(),
+        "--max-time".to_string(),
+        CURL_MAX_TIME_SECS.to_string(),
+        "-X".to_string(),
+        method.to_string(),
+    ];
+
+    for header in headers {
+        args.push("-H".to_string());
+        args.push(header.clone());
+    }
+
+    if let Some(body) = body {
+        args.push("--data".to_string());
+        args.push(body.to_string());
+    }
+
+    args.push(url.to_string());
+
+    run_curl_command(&args, false).or_else(|| {
+        if has_proxy_env() {
+            run_curl_command(&args, true)
+        } else {
+            None
+        }
+    })
+}
+
+fn has_proxy_env() -> bool {
+    PROXY_ENV_KEYS.iter().any(|key| {
+        env::var(key)
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    })
+}
+
+fn run_curl_command(args: &[String], clear_proxy_env: bool) -> Option<String> {
+    let mut command = Command::new("curl");
+    command.args(args.iter().map(String::as_str));
+
+    if clear_proxy_env {
+        for key in PROXY_ENV_KEYS {
+            command.env_remove(key);
+        }
+    }
+
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn parse_copilot_api_response(body: &str) -> Option<CopilotQuotaInfo> {
@@ -323,41 +570,66 @@ fn parse_copilot_api_response(body: &str) -> Option<CopilotQuotaInfo> {
         .and_then(|v| v.as_str())
         .unwrap_or("-")
         .to_string();
-
     let snapshots = root.get("quota_snapshots")?;
-
-    let premium = parse_quota_entry(snapshots.get("premium_interactions")?)?;
-    let chat = parse_quota_entry(snapshots.get("chat")?)?;
-    let completions = parse_quota_entry(snapshots.get("completions")?)?;
 
     Some(CopilotQuotaInfo {
         login,
         plan,
         reset_date,
-        premium,
-        chat,
-        completions,
+        premium: parse_quota_entry(snapshots.get("premium_interactions")?)?,
+        chat: parse_quota_entry(snapshots.get("chat")?)?,
+        completions: parse_quota_entry(snapshots.get("completions")?)?,
     })
 }
 
 fn parse_quota_entry(value: &Value) -> Option<CopilotQuotaEntry> {
-    let entitlement = value.get("entitlement")?.as_u64().unwrap_or(0);
-    let remaining = value.get("remaining")?.as_u64().unwrap_or(0);
-    let percent_f = value
-        .get("percent_remaining")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let unlimited = value
-        .get("unlimited")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
     Some(CopilotQuotaEntry {
-        entitlement,
-        remaining,
-        percent_remaining_x10: (percent_f * 10.0) as u64,
-        unlimited,
+        entitlement: value.get("entitlement").and_then(json_u64).unwrap_or(0),
+        remaining: value.get("remaining").and_then(json_u64).unwrap_or(0),
+        percent_remaining_x10: value
+            .get("percent_remaining")
+            .and_then(|v| v.as_f64())
+            .map(|percent| (percent * 10.0) as u64)
+            .unwrap_or(0),
+        unlimited: value
+            .get("unlimited")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     })
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().map(|number| number as u64))
+}
+
+fn parse_device_code_response(body: &str) -> Option<DeviceCodeResponse> {
+    let root: Value = serde_json::from_str(body).ok()?;
+
+    Some(DeviceCodeResponse {
+        device_code: root.get("device_code")?.as_str()?.to_string(),
+        user_code: root.get("user_code")?.as_str()?.to_string(),
+        verification_uri: root.get("verification_uri")?.as_str()?.to_string(),
+        expires_in: root.get("expires_in")?.as_u64()?,
+        interval: root.get("interval")?.as_u64()?,
+    })
+}
+
+fn parse_access_token_poll_response(body: &str) -> PollAccessTokenStatus {
+    let Ok(root): Result<Value, _> = serde_json::from_str(body) else {
+        return PollAccessTokenStatus::Failed;
+    };
+
+    if let Some(access_token) = root.get("access_token").and_then(|v| v.as_str()) {
+        return PollAccessTokenStatus::Authorized(access_token.to_string());
+    }
+
+    match root.get("error").and_then(|v| v.as_str()) {
+        Some("authorization_pending") => PollAccessTokenStatus::Pending,
+        Some("slow_down") => PollAccessTokenStatus::SlowDown,
+        _ => PollAccessTokenStatus::Failed,
+    }
 }
 
 fn parse_json_string_value(content: &str, key: &str) -> Option<String> {
@@ -397,7 +669,11 @@ fn parse_quoted_string(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_copilot_usage_summary_with_home, parse_copilot_api_response};
+    use super::{
+        PollAccessTokenStatus, collect_copilot_usage_summary_with_home, is_truthy_value,
+        parse_access_token_poll_response, parse_copilot_api_response, parse_device_code_response,
+        primary_github_token_path, read_github_token_file,
+    };
     use crate::model::UsageAvailability;
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -503,6 +779,15 @@ mod tests {
     }
 
     #[test]
+    fn reads_primary_github_token_cache() {
+        let home = TestDir::new("github-token-primary");
+        let path = primary_github_token_path(Some(home.path.as_path())).unwrap();
+        home.write_file(".local/share/pupkit/github_token", "ghu_primary\n");
+
+        assert_eq!(read_github_token_file(Some(&path)).unwrap(), "ghu_primary");
+    }
+
+    #[test]
     fn parses_api_response_quota_info() {
         let info = parse_copilot_api_response(sample_api_response()).unwrap();
         assert_eq!(info.login, "pengxu-liu_nioer");
@@ -515,7 +800,7 @@ mod tests {
 
         assert_eq!(info.premium.entitlement, 300);
         assert_eq!(info.premium.remaining, 287);
-        assert_eq!(info.premium.percent_remaining_x10, 956); // 95.6 * 10
+        assert_eq!(info.premium.percent_remaining_x10, 956);
     }
 
     #[test]
@@ -525,21 +810,51 @@ mod tests {
     }
 
     #[test]
-    fn fetch_returns_none_when_runner_fails() {
-        let mut runner = |_program: &str, _args: &[&str]| -> Option<String> { None };
-        let result =
-            super::fetch_copilot_api_quota_from_url(&mut runner, "http://localhost:9999/usage");
-        assert!(result.is_none());
+    fn parses_device_code_response_shape() {
+        let response = parse_device_code_response(
+            r#"{
+                "device_code": "dev-code",
+                "user_code": "USER-CODE",
+                "verification_uri": "https://github.com/login/device",
+                "expires_in": 900,
+                "interval": 5
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.device_code, "dev-code");
+        assert_eq!(response.user_code, "USER-CODE");
+        assert_eq!(response.verification_uri, "https://github.com/login/device");
+        assert_eq!(response.expires_in, 900);
+        assert_eq!(response.interval, 5);
     }
 
     #[test]
-    fn fetch_parses_runner_output() {
-        let body = sample_api_response().to_string();
-        let mut runner =
-            move |_program: &str, _args: &[&str]| -> Option<String> { Some(body.clone()) };
-        let result =
-            super::fetch_copilot_api_quota_from_url(&mut runner, "http://localhost:1414/usage");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().plan, "business");
+    fn parses_access_token_poll_states() {
+        assert_eq!(
+            parse_access_token_poll_response(r#"{"access_token":"ghu_token"}"#),
+            PollAccessTokenStatus::Authorized("ghu_token".to_string())
+        );
+        assert_eq!(
+            parse_access_token_poll_response(r#"{"error":"authorization_pending"}"#),
+            PollAccessTokenStatus::Pending
+        );
+        assert_eq!(
+            parse_access_token_poll_response(r#"{"error":"slow_down"}"#),
+            PollAccessTokenStatus::SlowDown
+        );
+        assert_eq!(
+            parse_access_token_poll_response(r#"{"error":"expired_token"}"#),
+            PollAccessTokenStatus::Failed
+        );
+    }
+
+    #[test]
+    fn truthy_value_parser_matches_expected_values() {
+        assert!(is_truthy_value("true"));
+        assert!(is_truthy_value("YES"));
+        assert!(is_truthy_value(" 1 "));
+        assert!(!is_truthy_value("0"));
+        assert!(!is_truthy_value("false"));
     }
 }
