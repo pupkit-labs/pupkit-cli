@@ -187,6 +187,11 @@ fn collect_codex_usage_summary(
         warnings.push("Codex auth plan type unavailable".to_string());
     }
 
+    let now_epoch_secs = now
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
     CodexUsageSummary {
         availability: if aggregate.token_records > 0 {
             UsageAvailability::Live
@@ -209,14 +214,33 @@ fn collect_codex_usage_summary(
         } else {
             None
         },
-        primary_rate_limit: aggregate
-            .primary_rate_limit
-            .unwrap_or_else(default_primary_rate_limit),
-        secondary_rate_limit: aggregate
-            .secondary_rate_limit
-            .unwrap_or_else(default_secondary_rate_limit),
+        primary_rate_limit: expire_if_past(
+            aggregate
+                .primary_rate_limit
+                .unwrap_or_else(default_primary_rate_limit),
+            now_epoch_secs,
+        ),
+        secondary_rate_limit: expire_if_past(
+            aggregate
+                .secondary_rate_limit
+                .unwrap_or_else(default_secondary_rate_limit),
+            now_epoch_secs,
+        ),
         hint: CODEX_HINT.to_string(),
     }
+}
+
+/// If the stored `resets_at` epoch is in the past the rate-limit window has already
+/// reset.  The recorded `used_percent` is meaningless for the new window, so clear it
+/// while keeping the reset-time label (so the user can see when it last reset).
+fn expire_if_past(mut window: RateLimitWindow, now_epoch_secs: u64) -> RateLimitWindow {
+    if window
+        .resets_at_epoch_secs
+        .is_some_and(|t| t < now_epoch_secs)
+    {
+        window.used_percent = None;
+    }
+    window
 }
 
 fn process_claude_jsonl_file(
@@ -503,6 +527,14 @@ fn extract_rate_limit_window(
     label: &'static str,
 ) -> RateLimitWindow {
     let window = rate_limits.get(key);
+    let resets_at_epoch_secs = window
+        .and_then(|value| value.get("resets_at"))
+        .and_then(parse_json_timestamp)
+        .map(|t| {
+            t.duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
     RateLimitWindow {
         label,
         used_percent: window.and_then(|value| get_u8_field(value, "used_percent")),
@@ -511,6 +543,7 @@ fn extract_rate_limit_window(
             .and_then(|value| value.get("resets_at"))
             .and_then(format_timestamp_value)
             .unwrap_or_else(|| PLACEHOLDER_LABEL.to_string()),
+        resets_at_epoch_secs,
     }
 }
 
@@ -966,6 +999,7 @@ fn default_primary_rate_limit() -> RateLimitWindow {
         used_percent: None,
         window_minutes: None,
         resets_at: PLACEHOLDER_LABEL.to_string(),
+        resets_at_epoch_secs: None,
     }
 }
 
@@ -975,6 +1009,7 @@ fn default_secondary_rate_limit() -> RateLimitWindow {
         used_percent: None,
         window_minutes: None,
         resets_at: PLACEHOLDER_LABEL.to_string(),
+        resets_at_epoch_secs: None,
     }
 }
 

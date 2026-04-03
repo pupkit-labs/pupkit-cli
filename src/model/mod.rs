@@ -6,6 +6,7 @@ pub enum AppCommand {
     AiUsage,
     Install,
     Services,
+    Details,
     Help,
     Version,
 }
@@ -156,6 +157,7 @@ pub struct RateLimitWindow {
     pub used_percent: Option<u8>,
     pub window_minutes: Option<u64>,
     pub resets_at: String,
+    pub resets_at_epoch_secs: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,6 +192,19 @@ pub enum ServiceStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopilotUsageSummary {
+    pub availability: UsageAvailability,
+    pub model: String,
+    pub plan_type: String,
+    pub last_active_at: String,
+    pub total_requests: Option<u64>,
+    pub last_24h_requests: Option<u64>,
+    pub total_sessions: Option<u64>,
+    pub remaining_percent: Option<u8>,
+    pub hint: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WelcomeSnapshot {
     pub timestamp: String,
     pub user_label: String,
@@ -198,6 +213,7 @@ pub struct WelcomeSnapshot {
     pub system: SystemSummary,
     pub ai_tools: AiToolsSummary,
     pub ai_usage: AiUsageSummary,
+    pub copilot: CopilotUsageSummary,
 }
 
 #[cfg(test)]
