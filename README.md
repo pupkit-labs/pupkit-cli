@@ -2,7 +2,7 @@
 
 把当前基于 Zsh 的欢迎页脚本能力沉淀为可维护、可测试、可发布的 Rust CLI。
 
-当前仓库已经完成一轮文档化梳理，分析对象为 `~/.zsh_liupx_welcome.sh`。需求、现状实现和后续 Rust 化计划见 [docs/README.md](docs/README.md)。
+当前仓库已经完成 welcome-only 收口，当前只保留欢迎页主入口与 GitHub 认证入口。
 
 当前仓库已收口为只保留 welcome 欢迎页，可直接运行：
 
@@ -21,7 +21,21 @@
 - 如需在欢迎页链路里按需触发认证，可在交互终端下设置 `PUP_COPILOT_DEVICE_AUTH=1` 后运行 welcome；如需强制重新认证，直接运行 `cargo run -- auth`
 - 仓库内保留 welcome 宽终端 / 窄终端 snapshot 回归
 
-发布与分发说明见 [docs/setup/release-distribution.md](docs/setup/release-distribution.md)。
+发布与分发：
+
+- GitHub Releases：`https://github.com/pupkit-labs/pupkit-cli/releases`
+- Homebrew tap：`brew install pupkit-labs/tap/pupkit`
+- shell installer：
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/pupkit-labs/pupkit-cli/releases/latest/download/pupkit-installer.sh | sh
+```
+
+发布前需要在 `pupkit-labs/pupkit-cli` 配置 GitHub Actions secret：
+
+- `HOMEBREW_TAP_TOKEN`
+
+它应当是一个对 `pupkit-labs/homebrew-tap` 具有 `Contents: Read and write` 权限的 token。
 
 当前仍待补齐：
 
