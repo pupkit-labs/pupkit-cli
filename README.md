@@ -139,6 +139,8 @@ Force a fresh GitHub device flow and store the resulting token for later Copilot
 
 Update `pupkit` to the latest GitHub Release via the shell installer.
 
+If the current version is already the latest release, `update` exits without reinstalling.
+
 If `pupkit` was installed with Homebrew, use `brew upgrade pupkit` instead.
 
 ## Authentication 🔐
