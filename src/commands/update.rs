@@ -6,8 +6,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde_json::Value;
+
 const INSTALLER_URL: &str =
     "https://github.com/pupkit-labs/pupkit-cli/releases/latest/download/pupkit-installer.sh";
+const RELEASE_API_URL: &str = "https://api.github.com/repos/pupkit-labs/pupkit-cli/releases/latest";
+const GITHUB_ACCEPT_HEADER: &str = "accept: application/vnd.github+json";
+const GITHUB_USER_AGENT_HEADER: &str = "user-agent: pupkit";
 
 pub fn execute() -> Result<(), String> {
     let current_exe = env::current_exe()
@@ -17,14 +22,44 @@ pub fn execute() -> Result<(), String> {
         .ok_or_else(|| "failed to determine current executable name".to_string())?;
     let install_bin = shell_installer_bin_path(binary_name)?;
     let plan = plan_update(&current_exe, &install_bin)?;
+    let current_version = current_version();
+    let latest_release = fetch_latest_release_version()?;
+
+    match compare_versions(&current_version, &latest_release.version) {
+        VersionOrdering::Equal => {
+            println!(
+                "pupkit {} is already up to date.",
+                latest_release.display_tag()
+            );
+            return Ok(());
+        }
+        VersionOrdering::CurrentIsNewer => {
+            println!(
+                "pupkit {} is newer than the latest published release {}; skipping update.",
+                current_version,
+                latest_release.display_tag()
+            );
+            return Ok(());
+        }
+        VersionOrdering::CurrentIsOlder | VersionOrdering::Unknown => {}
+    }
 
     run_shell_installer()?;
 
     if let Some(sync_target) = plan.sync_target {
         sync_installed_binary(&plan.install_bin, &sync_target)?;
-        println!("pupkit updated and synced to {}", sync_target.display());
+        println!(
+            "pupkit updated from {} to {} and synced to {}",
+            current_version,
+            latest_release.display_tag(),
+            sync_target.display()
+        );
     } else {
-        println!("pupkit updated successfully.");
+        println!(
+            "pupkit updated from {} to {}.",
+            current_version,
+            latest_release.display_tag()
+        );
     }
 
     Ok(())
@@ -34,6 +69,26 @@ pub fn execute() -> Result<(), String> {
 struct UpdatePlan {
     install_bin: PathBuf,
     sync_target: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LatestRelease {
+    tag_name: String,
+    version: String,
+}
+
+impl LatestRelease {
+    fn display_tag(&self) -> &str {
+        &self.tag_name
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionOrdering {
+    CurrentIsOlder,
+    Equal,
+    CurrentIsNewer,
+    Unknown,
 }
 
 fn shell_installer_bin_path(binary_name: &OsStr) -> Result<PathBuf, String> {
@@ -126,6 +181,127 @@ fn paths_resolve_to_same_file(left: &Path, right: &Path) -> bool {
     match (fs::canonicalize(left), fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
+    }
+}
+
+fn current_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn fetch_latest_release_version() -> Result<LatestRelease, String> {
+    let body = fetch_release_metadata()?;
+    parse_latest_release(&body)
+}
+
+fn fetch_release_metadata() -> Result<String, String> {
+    if command_exists("curl") {
+        return run_download_command(
+            "curl",
+            &[
+                "-fsSL",
+                "-H",
+                GITHUB_ACCEPT_HEADER,
+                "-H",
+                GITHUB_USER_AGENT_HEADER,
+                RELEASE_API_URL,
+            ],
+        );
+    }
+
+    if command_exists("wget") {
+        return run_download_command(
+            "wget",
+            &[
+                "--header",
+                GITHUB_ACCEPT_HEADER,
+                "--header",
+                GITHUB_USER_AGENT_HEADER,
+                "-q",
+                "-O",
+                "-",
+                RELEASE_API_URL,
+            ],
+        );
+    }
+
+    Err("update requires either `curl` or `wget` to be available on PATH".to_string())
+}
+
+fn run_download_command(command_name: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(command_name)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("failed to run {command_name}: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "{command_name} exited with status {}",
+            output.status
+        ));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("failed to parse {command_name} output as UTF-8: {error}"))
+}
+
+fn parse_latest_release(body: &str) -> Result<LatestRelease, String> {
+    let value: Value = serde_json::from_str(body)
+        .map_err(|error| format!("failed to parse latest release metadata: {error}"))?;
+    let tag_name = value
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "latest release metadata did not include a valid tag_name".to_string())?;
+    let version = normalize_version(tag_name)
+        .ok_or_else(|| format!("unsupported release tag format: {tag_name}"))?;
+
+    Ok(LatestRelease {
+        tag_name: tag_name.to_string(),
+        version,
+    })
+}
+
+fn normalize_version(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let trimmed = trimmed.strip_prefix('v').unwrap_or(trimmed);
+
+    if trimmed.is_empty() || parse_semver_core(trimmed).is_none() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn compare_versions(current: &str, latest: &str) -> VersionOrdering {
+    let Some(current_parts) = parse_semver_core(current) else {
+        return VersionOrdering::Unknown;
+    };
+    let Some(latest_parts) = parse_semver_core(latest) else {
+        return VersionOrdering::Unknown;
+    };
+
+    match current_parts.cmp(&latest_parts) {
+        std::cmp::Ordering::Less => VersionOrdering::CurrentIsOlder,
+        std::cmp::Ordering::Equal => VersionOrdering::Equal,
+        std::cmp::Ordering::Greater => VersionOrdering::CurrentIsNewer,
+    }
+}
+
+fn parse_semver_core(value: &str) -> Option<(u64, u64, u64)> {
+    let core = value.split(['-', '+']).next()?.trim();
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+
+    if parts.next().is_some() {
+        None
+    } else {
+        Some((major, minor, patch))
     }
 }
 
@@ -257,7 +433,11 @@ fn sync_installed_binary(source: &Path, target: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cargo_home_bin_dir_from, is_homebrew_install, is_source_build_path, plan_update};
+    use super::{
+        LatestRelease, VersionOrdering, cargo_home_bin_dir_from, compare_versions,
+        is_homebrew_install, is_source_build_path, normalize_version, parse_latest_release,
+        parse_semver_core, plan_update,
+    };
     use std::path::{Path, PathBuf};
 
     fn path(value: &str) -> PathBuf {
@@ -349,5 +529,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.sync_target, Some(path("/home/user/.local/bin/pupkit")));
+    }
+
+    #[test]
+    fn parses_latest_release_tag_name() {
+        let release = parse_latest_release(r#"{"tag_name":"v0.0.5"}"#).unwrap();
+
+        assert_eq!(
+            release,
+            LatestRelease {
+                tag_name: "v0.0.5".to_string(),
+                version: "0.0.5".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_version_strips_leading_v() {
+        assert_eq!(normalize_version("v0.0.5").unwrap(), "0.0.5");
+        assert_eq!(normalize_version("0.0.5").unwrap(), "0.0.5");
+        assert!(normalize_version("latest").is_none());
+    }
+
+    #[test]
+    fn parses_semver_core_triplet() {
+        assert_eq!(parse_semver_core("0.0.5").unwrap(), (0, 0, 5));
+        assert_eq!(parse_semver_core("0.0.5-beta.1").unwrap(), (0, 0, 5));
+        assert!(parse_semver_core("0.0").is_none());
+    }
+
+    #[test]
+    fn compares_versions_correctly() {
+        assert_eq!(
+            compare_versions("0.0.4", "0.0.5"),
+            VersionOrdering::CurrentIsOlder
+        );
+        assert_eq!(compare_versions("0.0.5", "0.0.5"), VersionOrdering::Equal);
+        assert_eq!(
+            compare_versions("0.0.6", "0.0.5"),
+            VersionOrdering::CurrentIsNewer
+        );
+        assert_eq!(compare_versions("dev", "0.0.5"), VersionOrdering::Unknown);
     }
 }

@@ -139,6 +139,8 @@ pupkit update
 
 通过 shell installer 把 `pupkit` 更新到最新 GitHub Release。
 
+如果当前版本已经是最新 release，`update` 会直接退出，不再重复安装。
+
 如果 `pupkit` 是通过 Homebrew 安装的，请改用 `brew upgrade pupkit`。
 
 ## 认证 🔐
