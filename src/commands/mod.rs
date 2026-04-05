@@ -1,10 +1,12 @@
 mod auth;
+mod update;
 mod welcome;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     match parse_command(&args)? {
         Command::Welcome { explicit } => welcome::execute(explicit),
         Command::Auth => auth::execute(),
+        Command::Update => update::execute(),
     }
 }
 
@@ -12,6 +14,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 enum Command {
     Welcome { explicit: bool },
     Auth,
+    Update,
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -25,6 +28,11 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("auth") if args.len() == 2 => Ok(Command::Auth),
         Some("auth") => Err(format!(
             "auth does not take additional arguments\n\n{}",
+            usage_text(&program_name(args))
+        )),
+        Some("update") if args.len() == 2 => Ok(Command::Update),
+        Some("update") => Err(format!(
+            "update does not take additional arguments\n\n{}",
             usage_text(&program_name(args))
         )),
         Some(other) => Err(format!(
@@ -45,7 +53,7 @@ fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [welcome|auth]
+  {program} [welcome|auth|update]
 "
     )
 }
@@ -79,6 +87,12 @@ mod tests {
     }
 
     #[test]
+    fn parses_update_command() {
+        let args = vec!["pup".to_string(), "update".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::Update);
+    }
+
+    #[test]
     fn rejects_additional_welcome_arguments() {
         let args = vec![
             "pup".to_string(),
@@ -96,6 +110,18 @@ mod tests {
         let error = parse_command(&args).unwrap_err();
 
         assert!(error.contains("auth does not take additional arguments"));
+    }
+
+    #[test]
+    fn rejects_additional_update_arguments() {
+        let args = vec![
+            "pup".to_string(),
+            "update".to_string(),
+            "--extra".to_string(),
+        ];
+        let error = parse_command(&args).unwrap_err();
+
+        assert!(error.contains("update does not take additional arguments"));
     }
 
     #[test]
