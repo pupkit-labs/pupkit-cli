@@ -60,10 +60,18 @@ cp ./target/release/pupkit ~/.local/bin/pupkit
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-如果你希望每次打开新的交互终端时自动显示 welcome，可以再加上：
+如果你希望每次打开新的交互终端时自动显示 welcome，把下面这段加到 `~/.zshrc` 或 `~/.bashrc` 文件末尾：
 
 ```sh
-command -v pupkit >/dev/null && pupkit welcome
+if command -v pupkit >/dev/null 2>&1; then
+  pupkit welcome
+fi
+```
+
+如果你用的是 zsh，也可以直接复制下面这条命令执行，它会自动把这段内容追加到 `~/.zshrc` 末尾，并尽量避免重复追加：
+
+```sh
+grep -Fq '# pupkit welcome' ~/.zshrc 2>/dev/null || printf '\n# pupkit welcome\nif command -v pupkit >/dev/null 2>&1; then\n  pupkit welcome\nfi\n' >> ~/.zshrc
 ```
 
 ### fish

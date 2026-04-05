@@ -60,10 +60,18 @@ Add this to `~/.zshrc` or `~/.bashrc`:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-If you want a new interactive shell to render the welcome screen automatically:
+If you want a new interactive shell to render the welcome screen automatically, add this to the end of `~/.zshrc` or `~/.bashrc`:
 
 ```sh
-command -v pupkit >/dev/null && pupkit welcome
+if command -v pupkit >/dev/null 2>&1; then
+  pupkit welcome
+fi
+```
+
+If you use zsh and want a copy-paste command that appends the block automatically:
+
+```sh
+grep -Fq '# pupkit welcome' ~/.zshrc 2>/dev/null || printf '\n# pupkit welcome\nif command -v pupkit >/dev/null 2>&1; then\n  pupkit welcome\nfi\n' >> ~/.zshrc
 ```
 
 ### fish
