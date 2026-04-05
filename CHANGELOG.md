@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.5 - 2026-04-05
+
+### Changed / 改进
+
+- Made `pupkit update` check the latest published GitHub Release before reinstalling. / 调整 `pupkit update`，在重新安装前先检查 GitHub 上的最新已发布版本。
+- Added an explicit "already up to date" fast path to avoid reinstalling the same version. / 新增“已经是最新版本”的快速退出逻辑，避免重复安装同一版本。
+
+### Docs / 文档
+
+- Clarified in the READMEs that `update` exits early when the current version already matches the latest release. / 在 README 中补充说明：若当前版本已经匹配最新 release，`update` 会直接退出。
+
 ## 0.0.4 - 2026-04-05
 
 ### Added / 新增
