@@ -1,10 +1,10 @@
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +19,7 @@ const EVENT_TURN_START: &str = "assistant.turn_start";
 const EVENT_MESSAGE: &str = "assistant.message";
 const GITHUB_BASE_URL: &str = "https://github.com";
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+// OAuth client IDs are public app identifiers, not client secrets.
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_APP_SCOPES: &str = "read:user";
 const EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
@@ -164,6 +165,12 @@ enum PollAccessTokenStatus {
     Pending,
     SlowDown,
     Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CurlCommandSpec {
+    args: Vec<String>,
+    stdin_payload: String,
 }
 
 fn scan_sessions_dir(dir: &Path, now: SystemTime, aggregate: &mut CopilotAggregate) {
@@ -404,12 +411,8 @@ fn primary_github_token_path(home: Option<&Path>) -> Option<PathBuf> {
 fn write_github_token_cache(home: Option<&Path>, token: &str) -> Option<()> {
     let path = primary_github_token_path(home)?;
     let parent = path.parent()?;
-    fs::create_dir_all(parent).ok()?;
-    fs::write(&path, token).ok()?;
-    #[cfg(unix)]
-    {
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
+    ensure_private_dir(parent).ok()?;
+    write_secret_file(&path, token).ok()?;
     Some(())
 }
 
@@ -492,35 +495,73 @@ fn run_curl_json_request(
     headers: &[String],
     body: Option<Value>,
 ) -> Option<String> {
-    let mut args = vec![
-        "-fsSL".to_string(),
-        "--connect-timeout".to_string(),
-        CURL_CONNECT_TIMEOUT_SECS.to_string(),
-        "--max-time".to_string(),
-        CURL_MAX_TIME_SECS.to_string(),
-        "-X".to_string(),
-        method.to_string(),
-    ];
+    let spec = build_curl_command_spec(method, url, headers, body.as_ref());
 
-    for header in headers {
-        args.push("-H".to_string());
-        args.push(header.clone());
-    }
-
-    if let Some(body) = body {
-        args.push("--data".to_string());
-        args.push(body.to_string());
-    }
-
-    args.push(url.to_string());
-
-    run_curl_command(&args, false).or_else(|| {
+    run_curl_command(&spec, false).or_else(|| {
         if has_proxy_env() {
-            run_curl_command(&args, true)
+            run_curl_command(&spec, true)
         } else {
             None
         }
     })
+}
+
+fn build_curl_command_spec(
+    method: &str,
+    url: &str,
+    headers: &[String],
+    body: Option<&Value>,
+) -> CurlCommandSpec {
+    let mut stdin_payload = String::new();
+    stdin_payload.push_str("silent\n");
+    stdin_payload.push_str("show-error\n");
+    stdin_payload.push_str("fail\n");
+    stdin_payload.push_str("location\n");
+    append_curl_config_line(
+        &mut stdin_payload,
+        "connect-timeout",
+        CURL_CONNECT_TIMEOUT_SECS,
+    );
+    append_curl_config_line(&mut stdin_payload, "max-time", CURL_MAX_TIME_SECS);
+    append_curl_config_line(&mut stdin_payload, "request", method);
+
+    for header in headers {
+        append_curl_config_line(&mut stdin_payload, "header", header);
+    }
+
+    if let Some(body) = body {
+        append_curl_config_line(&mut stdin_payload, "data", &body.to_string());
+    }
+
+    append_curl_config_line(&mut stdin_payload, "url", url);
+
+    CurlCommandSpec {
+        args: vec!["--config".to_string(), "-".to_string()],
+        stdin_payload,
+    }
+}
+
+fn append_curl_config_line(buffer: &mut String, key: &str, value: &str) {
+    buffer.push_str(key);
+    buffer.push_str(" = \"");
+    buffer.push_str(&escape_curl_config_string(value));
+    buffer.push_str("\"\n");
+}
+
+fn escape_curl_config_string(value: &str) -> String {
+    let mut escaped = String::new();
+
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            other => escaped.push(other),
+        }
+    }
+
+    escaped
 }
 
 fn has_proxy_env() -> bool {
@@ -532,9 +573,13 @@ fn has_proxy_env() -> bool {
     })
 }
 
-fn run_curl_command(args: &[String], clear_proxy_env: bool) -> Option<String> {
+fn run_curl_command(spec: &CurlCommandSpec, clear_proxy_env: bool) -> Option<String> {
     let mut command = Command::new("curl");
-    command.args(args.iter().map(String::as_str));
+    command
+        .args(spec.args.iter().map(String::as_str))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     if clear_proxy_env {
         for key in PROXY_ENV_KEYS {
@@ -542,7 +587,13 @@ fn run_curl_command(args: &[String], clear_proxy_env: bool) -> Option<String> {
         }
     }
 
-    let output = command.output().ok()?;
+    let mut child = command.spawn().ok()?;
+    {
+        let mut stdin = child.stdin.take()?;
+        stdin.write_all(spec.stdin_payload.as_bytes()).ok()?;
+    }
+
+    let output = child.wait_with_output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -554,6 +605,34 @@ fn run_curl_command(args: &[String], clear_proxy_env: bool) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn write_secret_file(path: &Path, contents: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    if path.exists() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents.as_bytes())?;
+    file.flush()?;
+    Ok(())
 }
 
 fn parse_copilot_api_response(body: &str) -> Option<CopilotQuotaInfo> {
@@ -670,9 +749,10 @@ fn parse_quoted_string(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PollAccessTokenStatus, collect_copilot_usage_summary_with_home, is_truthy_value,
-        parse_access_token_poll_response, parse_copilot_api_response, parse_device_code_response,
-        primary_github_token_path, read_github_token_file,
+        PollAccessTokenStatus, build_curl_command_spec, collect_copilot_usage_summary_with_home,
+        is_truthy_value, parse_access_token_poll_response, parse_copilot_api_response,
+        parse_device_code_response, primary_github_token_path, read_github_token_file,
+        write_github_token_cache,
     };
     use crate::model::UsageAvailability;
     use std::path::PathBuf;
@@ -785,6 +865,49 @@ mod tests {
         home.write_file(".local/share/pupkit/github_token", "ghu_primary\n");
 
         assert_eq!(read_github_token_file(Some(&path)).unwrap(), "ghu_primary");
+    }
+
+    #[test]
+    fn curl_command_spec_keeps_token_out_of_args() {
+        let spec = build_curl_command_spec(
+            "GET",
+            "https://api.github.com/copilot_internal/user",
+            &["authorization: token ghu_secret".to_string()],
+            None,
+        );
+
+        assert_eq!(spec.args, vec!["--config".to_string(), "-".to_string()]);
+        assert!(!spec.args.iter().any(|arg| arg.contains("ghu_secret")));
+        assert!(
+            spec.stdin_payload
+                .contains("authorization: token ghu_secret")
+        );
+        assert!(
+            spec.stdin_payload
+                .contains("url = \"https://api.github.com/copilot_internal/user\"")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_token_cache_uses_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TestDir::new("github-token-perms");
+        let token_path = primary_github_token_path(Some(home.path.as_path())).unwrap();
+
+        write_github_token_cache(Some(home.path.as_path()), "ghu_secret").unwrap();
+
+        let dir_mode = std::fs::metadata(token_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+        assert_eq!(std::fs::read_to_string(token_path).unwrap(), "ghu_secret");
     }
 
     #[test]
