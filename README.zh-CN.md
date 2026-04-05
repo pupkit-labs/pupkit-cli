@@ -17,6 +17,7 @@
 - `pupkit`
 - `pupkit welcome`
 - `pupkit auth`
+- `pupkit update`
 
 ## 安装 📦
 
@@ -111,6 +112,12 @@ pupkit welcome
 pupkit auth
 ```
 
+如果你是通过 shell installer 安装的，并且想更新到最新发布版本：
+
+```sh
+pupkit update
+```
+
 ## 命令 🧭
 
 ### `welcome`
@@ -127,6 +134,12 @@ pupkit auth
 ### `auth`
 
 强制重新走一次 GitHub device flow，并把 token 保存下来，供后续 Copilot 配额请求复用。
+
+### `update`
+
+通过 shell installer 把 `pupkit` 更新到最新 GitHub Release。
+
+如果 `pupkit` 是通过 Homebrew 安装的，请改用 `brew upgrade pupkit`。
 
 ## 认证 🔐
 

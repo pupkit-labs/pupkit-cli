@@ -17,6 +17,7 @@ The current product surface is intentionally small:
 - `pupkit`
 - `pupkit welcome`
 - `pupkit auth`
+- `pupkit update`
 
 ## Install 📦
 
@@ -111,6 +112,12 @@ If you need to refresh GitHub authentication for Copilot quota lookup:
 pupkit auth
 ```
 
+If you installed via the shell installer and want to update to the latest release:
+
+```sh
+pupkit update
+```
+
 ## Commands 🧭
 
 ### `welcome`
@@ -127,6 +134,12 @@ This includes:
 ### `auth`
 
 Force a fresh GitHub device flow and store the resulting token for later Copilot quota requests.
+
+### `update`
+
+Update `pupkit` to the latest GitHub Release via the shell installer.
+
+If `pupkit` was installed with Homebrew, use `brew upgrade pupkit` instead.
 
 ## Authentication 🔐
 
