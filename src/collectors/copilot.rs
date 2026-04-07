@@ -43,19 +43,17 @@ const PROXY_ENV_KEYS: [&str; 6] = [
 ];
 
 pub fn collect_copilot_usage_summary() -> CopilotUsageSummary {
+    finish_copilot_usage_summary(collect_copilot_usage_summary_fast())
+}
+
+pub fn collect_copilot_usage_summary_fast() -> CopilotUsageSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
-    let mut summary = collect_copilot_usage_summary_with_home(home.as_deref(), SystemTime::now());
+    collect_copilot_usage_summary_fast_with_home(home.as_deref(), SystemTime::now())
+}
 
-    if let Some(quota) = fetch_copilot_quota(home.as_deref()) {
-        summary.plan_type = quota.plan.clone();
-        summary.availability = match summary.availability {
-            UsageAvailability::Unavailable => UsageAvailability::Partial,
-            other => other,
-        };
-        summary.quota = Some(quota);
-    }
-
-    summary
+pub fn finish_copilot_usage_summary(summary: CopilotUsageSummary) -> CopilotUsageSummary {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    hydrate_copilot_usage_summary(summary, home.as_deref())
 }
 
 pub fn run_github_auth_flow() -> Result<PathBuf, String> {
@@ -83,6 +81,32 @@ pub fn run_github_auth_flow() -> Result<PathBuf, String> {
         .ok_or_else(|| "failed to write GitHub token cache".to_string())?;
 
     Ok(token_path)
+}
+
+fn collect_copilot_usage_summary_fast_with_home(
+    home: Option<&Path>,
+    now: SystemTime,
+) -> CopilotUsageSummary {
+    let mut summary = collect_copilot_usage_summary_with_home(home, now);
+    summary.is_loading = true;
+    summary
+}
+
+fn hydrate_copilot_usage_summary(
+    mut summary: CopilotUsageSummary,
+    home: Option<&Path>,
+) -> CopilotUsageSummary {
+    if let Some(quota) = fetch_copilot_quota(home) {
+        summary.plan_type = quota.plan.clone();
+        summary.availability = match summary.availability {
+            UsageAvailability::Unavailable => UsageAvailability::Partial,
+            other => other,
+        };
+        summary.quota = Some(quota);
+    }
+
+    summary.is_loading = false;
+    summary
 }
 
 fn collect_copilot_usage_summary_with_home(
@@ -119,6 +143,7 @@ fn collect_copilot_usage_summary_with_home(
         availability,
         model,
         plan_type,
+        is_loading: false,
         last_active_at: format_optional_timestamp(aggregate.latest_activity_at),
         total_requests: if aggregate.total_requests > 0 {
             Some(aggregate.total_requests)
@@ -328,6 +353,7 @@ fn unavailable_summary() -> CopilotUsageSummary {
         availability: UsageAvailability::Unavailable,
         model: DEFAULT_MODEL.to_string(),
         plan_type: "unknown".to_string(),
+        is_loading: false,
         last_active_at: "-".to_string(),
         total_requests: None,
         last_24h_requests: None,
@@ -749,7 +775,8 @@ fn parse_quoted_string(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PollAccessTokenStatus, build_curl_command_spec, collect_copilot_usage_summary_with_home,
+        PollAccessTokenStatus, build_curl_command_spec,
+        collect_copilot_usage_summary_fast_with_home, collect_copilot_usage_summary_with_home,
         is_truthy_value, parse_access_token_poll_response, parse_copilot_api_response,
         parse_device_code_response, primary_github_token_path, read_github_token_file,
         write_github_token_cache,
@@ -812,6 +839,7 @@ mod tests {
         assert_eq!(summary.availability, UsageAvailability::Unavailable);
         assert_eq!(summary.model, "claude-sonnet-4-6");
         assert!(summary.quota.is_none());
+        assert!(!summary.is_loading);
     }
 
     #[test]
@@ -820,6 +848,7 @@ mod tests {
         let summary = collect_copilot_usage_summary_with_home(Some(&home.path), fixed_now());
         assert_eq!(summary.availability, UsageAvailability::Unavailable);
         assert!(summary.total_requests.is_none());
+        assert!(!summary.is_loading);
     }
 
     #[test]
@@ -837,6 +866,7 @@ mod tests {
         assert_eq!(summary.availability, UsageAvailability::Live);
         assert_eq!(summary.total_requests, Some(2));
         assert_eq!(summary.total_sessions, Some(1));
+        assert!(!summary.is_loading);
     }
 
     #[test]
@@ -856,6 +886,16 @@ mod tests {
         home.write_file(".copilot/config.json", r#"{"plan_type": "Individual"}"#);
         let summary = collect_copilot_usage_summary_with_home(Some(&home.path), fixed_now());
         assert_eq!(summary.plan_type, "Individual");
+        assert!(!summary.is_loading);
+    }
+
+    #[test]
+    fn fast_summary_marks_quota_as_loading() {
+        let home = TestDir::new("copilot-fast");
+        let summary = collect_copilot_usage_summary_fast_with_home(Some(&home.path), fixed_now());
+
+        assert!(summary.is_loading);
+        assert!(summary.quota.is_none());
     }
 
     #[test]

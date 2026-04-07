@@ -5,10 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::collectors::ai_tools::collect_ai_tools_summary;
-use crate::collectors::ai_usage::collect_ai_usage_summary;
-use crate::collectors::copilot::collect_copilot_usage_summary;
-use crate::model::{PublicIpSource, PublicIpSummary, SystemSummary, WelcomeSnapshot};
+use crate::model::{PublicIpSource, PublicIpSummary, SystemSummary};
 
 const PUBLIC_IP_CACHE_DIR: &str = ".cache/liupx_welcome";
 const PUBLIC_IP_CACHE_FILE: &str = "pup_public_ip.json";
@@ -30,23 +27,11 @@ const PROXY_ENV_KEYS: [&str; 6] = [
     "ALL_PROXY",
 ];
 
-pub fn collect_welcome_snapshot() -> WelcomeSnapshot {
-    let system = SystemSummary {
+pub fn collect_system_summary_fast() -> SystemSummary {
+    SystemSummary {
         host_label: detect_hostname(),
-        public_ip: collect_public_ip_summary(),
+        public_ip: loading_public_ip_summary(),
         proxy_label: detect_proxy_label(),
-    };
-    let ai_tools = collect_ai_tools_summary();
-    let ai_usage = collect_ai_usage_summary();
-    let copilot = collect_copilot_usage_summary();
-
-    WelcomeSnapshot {
-        timestamp: detect_time_label(),
-        user_label: detect_user_label(),
-        system,
-        ai_tools,
-        ai_usage,
-        copilot,
     }
 }
 
@@ -61,7 +46,7 @@ fn detect_hostname() -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn collect_public_ip_summary() -> PublicIpSummary {
+pub fn collect_public_ip_summary() -> PublicIpSummary {
     let home = env::var_os("HOME").map(PathBuf::from);
     collect_public_ip_summary_with_home(
         home.as_deref(),
@@ -180,11 +165,21 @@ fn fetch_url(
     .or_else(|| runner("wget", &["-q", "-O", "-", "--tries=1", "--timeout=2", url]))
 }
 
+fn loading_public_ip_summary() -> PublicIpSummary {
+    PublicIpSummary {
+        address: "-".to_string(),
+        country_label: String::new(),
+        source: PublicIpSource::Unavailable,
+        is_loading: true,
+    }
+}
+
 fn unavailable_public_ip_summary() -> PublicIpSummary {
     PublicIpSummary {
         address: "-".to_string(),
         country_label: String::new(),
         source: PublicIpSource::Unavailable,
+        is_loading: false,
     }
 }
 
@@ -287,11 +282,11 @@ fn is_enabled_proxy_value(value: &str) -> bool {
     !normalized.is_empty() && normalized != "off" && normalized != "none"
 }
 
-fn detect_time_label() -> String {
+pub(crate) fn detect_time_label() -> String {
     run_command("date", &["+%Y-%m-%d %H:%M"]).unwrap_or_else(|| "-".to_string())
 }
 
-fn detect_user_label() -> String {
+pub(crate) fn detect_user_label() -> String {
     env::var("USER")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -393,6 +388,7 @@ impl CachedPublicIp {
             address: self.address.clone(),
             country_label: self.country_label.clone(),
             source,
+            is_loading: false,
         }
     }
 }
@@ -505,6 +501,7 @@ mod tests {
         assert_eq!(summary.source, PublicIpSource::Cache);
         assert_eq!(summary.address, "149.28.91.67");
         assert_eq!(summary.country_label, "United States");
+        assert!(!summary.is_loading);
         assert_eq!(calls, 0);
     }
 
@@ -523,6 +520,7 @@ mod tests {
         assert_eq!(summary.source, PublicIpSource::Cache);
         assert_eq!(summary.address, "149.28.91.67");
         assert_eq!(summary.country_label, "United States");
+        assert!(!summary.is_loading);
     }
 
     #[test]
@@ -558,6 +556,7 @@ mod tests {
         assert_eq!(summary.source, PublicIpSource::Live);
         assert_eq!(summary.address, "149.28.91.67");
         assert_eq!(summary.country_label, "US");
+        assert!(!summary.is_loading);
 
         let cache = home.read_file(".cache/liupx_welcome/pup_public_ip.json");
         assert!(cache.contains("\"fetched_at\":1000"));
@@ -580,6 +579,7 @@ mod tests {
         assert_eq!(summary.source, PublicIpSource::Live);
         assert_eq!(summary.address, "149.28.91.67");
         assert_eq!(summary.country_label, "US");
+        assert!(!summary.is_loading);
     }
 
     #[test]
