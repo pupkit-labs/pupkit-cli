@@ -25,6 +25,7 @@ pub mod ansi {
     pub const CLEAR_UNTIL_END: &str = "\x1b[0J";
     pub const LOADING_FRAME_INTERVAL_MILLIS: u64 = 120;
     const LOADING_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const LOADING_ELLIPSIS_FRAMES: [&str; 4] = [".··", "·.·", "···", "·.·"];
 
     pub fn move_up(lines: usize) -> String {
         if lines == 0 {
@@ -47,7 +48,22 @@ pub mod ansi {
     }
 
     pub fn animated_loading_label(label: &str, frame_index: usize) -> String {
-        format!("{} {}", loading_spinner_frame(frame_index), label)
+        let (base_label, animated_ellipsis) = label
+            .strip_suffix("...")
+            .map(|text| {
+                (
+                    text,
+                    LOADING_ELLIPSIS_FRAMES[frame_index % LOADING_ELLIPSIS_FRAMES.len()],
+                )
+            })
+            .unwrap_or((label, ""));
+
+        format!(
+            "{} {}{}",
+            loading_spinner_frame(frame_index),
+            base_label,
+            animated_ellipsis
+        )
     }
 }
 
@@ -1081,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn welcome_loading_render_advances_spinner_frames() {
+    fn welcome_loading_render_advances_spinner_and_ellipsis_frames() {
         let snapshot = sample_loading_welcome_snapshot();
         let first = render_welcome_loading_with_width_and_context(
             &snapshot,
@@ -1095,12 +1111,30 @@ mod tests {
             &sample_local_time_context(),
             1,
         );
+        let third = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+            2,
+        );
+        let fourth = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+            3,
+        );
 
-        assert!(first.contains("⠋ Loading..."));
-        assert!(first.contains("⠋ Loading Copilot..."));
-        assert!(second.contains("⠙ Loading..."));
-        assert!(second.contains("⠙ Loading Copilot..."));
+        assert!(first.contains("⠋ Loading.··"));
+        assert!(first.contains("⠋ Loading Copilot.··"));
+        assert!(second.contains("⠙ Loading·.·"));
+        assert!(second.contains("⠙ Loading Copilot·.·"));
+        assert!(third.contains("⠹ Loading···"));
+        assert!(third.contains("⠹ Loading Copilot···"));
+        assert!(fourth.contains("⠸ Loading·.·"));
+        assert!(fourth.contains("⠸ Loading Copilot·.·"));
         assert_ne!(normalize_snapshot(&first), normalize_snapshot(&second));
+        assert_ne!(normalize_snapshot(&second), normalize_snapshot(&third));
+        assert_ne!(normalize_snapshot(&third), normalize_snapshot(&fourth));
     }
 
     #[test]
