@@ -6,7 +6,7 @@ use crate::collectors::copilot::finish_copilot_usage_summary;
 use crate::collectors::system::collect_public_ip_summary;
 use crate::collectors::{collect_fast_snapshot, collect_welcome_snapshot};
 use crate::model::{CopilotUsageSummary, LoadingState, PublicIpSummary, WelcomeSnapshot};
-use crate::render::{ansi, render_refresh, render_welcome_loading, render_welcome_slim};
+use crate::render::{ansi, render_refresh, render_welcome_loading_frame, render_welcome_slim};
 use crate::shell;
 
 const MAX_LOAD_TIME_SECS: u64 = 3;
@@ -49,7 +49,8 @@ fn execute_with_loading() -> Result<(), String> {
 
 fn run_loading_flow(stdout: &mut io::Stdout) -> Result<(), String> {
     let mut snapshot = collect_fast_snapshot();
-    let mut previous_output = render_snapshot(&snapshot);
+    let mut loading_frame = 0usize;
+    let mut previous_output = render_snapshot(&snapshot, loading_frame);
     write!(stdout, "{}", previous_output)
         .map_err(|error| format!("failed to write welcome output: {error}"))?;
     stdout
@@ -70,6 +71,7 @@ fn run_loading_flow(stdout: &mut io::Stdout) -> Result<(), String> {
     });
 
     let deadline = Instant::now() + Duration::from_secs(MAX_LOAD_TIME_SECS);
+    let loading_tick = Duration::from_millis(ansi::LOADING_FRAME_INTERVAL_MILLIS);
     let mut ip_state = LoadingState::Loading;
     let mut copilot_state = LoadingState::Loading;
 
@@ -81,18 +83,26 @@ fn run_loading_flow(stdout: &mut io::Stdout) -> Result<(), String> {
             break;
         }
 
-        match rx.recv_timeout(remaining) {
+        let wait_time = remaining.min(loading_tick);
+
+        match rx.recv_timeout(wait_time) {
             Ok(WelcomeUpdate::PublicIp(summary)) => {
                 snapshot.system.public_ip = summary.clone();
                 ip_state = LoadingState::Loaded(summary);
-                previous_output = refresh_snapshot(stdout, &previous_output, &snapshot)?;
+                previous_output =
+                    refresh_snapshot(stdout, &previous_output, &snapshot, loading_frame)?;
             }
             Ok(WelcomeUpdate::Copilot(summary)) => {
                 snapshot.copilot = summary.clone();
                 copilot_state = LoadingState::Loaded(summary);
-                previous_output = refresh_snapshot(stdout, &previous_output, &snapshot)?;
+                previous_output =
+                    refresh_snapshot(stdout, &previous_output, &snapshot, loading_frame)?;
             }
-            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                loading_frame = loading_frame.wrapping_add(1);
+                previous_output =
+                    refresh_snapshot(stdout, &previous_output, &snapshot, loading_frame)?;
+            }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -108,16 +118,16 @@ fn run_loading_flow(stdout: &mut io::Stdout) -> Result<(), String> {
     }
 
     if needs_refresh {
-        previous_output = refresh_snapshot(stdout, &previous_output, &snapshot)?;
+        previous_output = refresh_snapshot(stdout, &previous_output, &snapshot, loading_frame)?;
     }
 
     let _ = previous_output;
     Ok(())
 }
 
-fn render_snapshot(snapshot: &WelcomeSnapshot) -> String {
+fn render_snapshot(snapshot: &WelcomeSnapshot, loading_frame: usize) -> String {
     if snapshot.system.public_ip.is_loading || snapshot.copilot.is_loading {
-        render_welcome_loading(snapshot)
+        render_welcome_loading_frame(snapshot, loading_frame)
     } else {
         render_welcome_slim(snapshot)
     }
@@ -127,8 +137,9 @@ fn refresh_snapshot(
     stdout: &mut io::Stdout,
     previous_output: &str,
     snapshot: &WelcomeSnapshot,
+    loading_frame: usize,
 ) -> Result<String, String> {
-    let next_output = render_snapshot(snapshot);
+    let next_output = render_snapshot(snapshot, loading_frame);
     write!(stdout, "{}", render_refresh(previous_output, &next_output))
         .map_err(|error| format!("failed to refresh welcome output: {error}"))?;
     stdout
