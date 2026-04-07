@@ -12,13 +12,34 @@ const MIN_LABEL_WIDTH: usize = 4;
 const MIN_VALUE_WIDTH: usize = 16;
 const ANSI_RESET: &str = "\u{1b}[0m";
 const CYAN_STYLE: &str = "\u{1b}[38;2;32;201;255m";
-const TITLE_GRADIENT_STOPS: &[(u8, u8, u8)] = &[
-    (180, 92, 255),
-    (84, 119, 255),
-    (32, 201, 255),
-];
+const TITLE_GRADIENT_STOPS: &[(u8, u8, u8)] = &[(180, 92, 255), (84, 119, 255), (32, 201, 255)];
 const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;2;92;255;128m";
 const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;2;255;210;150m";
+pub const IP_LOADING_TEXT: &str = "Loading...";
+pub const COPILOT_LOADING_TEXT: &str = "Loading...";
+
+pub mod ansi {
+    pub const HIDE_CURSOR: &str = "\x1b[?25l";
+    pub const SHOW_CURSOR: &str = "\x1b[?25h";
+    pub const CLEAR_LINE: &str = "\x1b[2K";
+    pub const CLEAR_UNTIL_END: &str = "\x1b[0J";
+
+    pub fn move_up(lines: usize) -> String {
+        if lines == 0 {
+            String::new()
+        } else {
+            format!("\x1b[{lines}A")
+        }
+    }
+
+    pub fn move_to_column(column: usize) -> String {
+        format!("\x1b[{}G", column.max(1))
+    }
+
+    pub fn line_count(text: &str) -> usize {
+        text.lines().count()
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LocalTimeContext {
@@ -37,6 +58,38 @@ struct SimpleDateTime {
 
 pub fn render_welcome_slim(snapshot: &WelcomeSnapshot) -> String {
     render_welcome_slim_with_width(snapshot, resolve_total_width())
+}
+
+pub fn render_welcome_loading(snapshot: &WelcomeSnapshot) -> String {
+    render_welcome_loading_with_width(snapshot, resolve_total_width())
+}
+
+pub fn render_refresh(previous_output: &str, next_output: &str) -> String {
+    if previous_output.is_empty() {
+        return next_output.to_string();
+    }
+
+    format!(
+        "{}{}{}{}{}",
+        ansi::move_up(ansi::line_count(previous_output)),
+        ansi::move_to_column(1),
+        ansi::CLEAR_LINE,
+        ansi::CLEAR_UNTIL_END,
+        next_output,
+    )
+}
+
+fn render_welcome_loading_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
+    let local_time = resolve_local_time_context();
+    render_welcome_loading_with_width_and_context(snapshot, total_width, &local_time)
+}
+
+fn render_welcome_loading_with_width_and_context(
+    snapshot: &WelcomeSnapshot,
+    total_width: usize,
+    local_time: &LocalTimeContext,
+) -> String {
+    render_welcome_slim_with_width_and_context(snapshot, total_width, local_time)
 }
 
 fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
@@ -68,7 +121,11 @@ fn render_welcome_slim_with_width_and_context(
         local_time,
     );
     let separator = ai_section.lines().next().unwrap_or("").to_string();
-    let public_ip_label = snapshot.system.public_ip.display_label();
+    let public_ip_label = if snapshot.system.public_ip.is_loading {
+        IP_LOADING_TEXT.to_string()
+    } else {
+        snapshot.system.public_ip.display_label()
+    };
 
     output.push_str(&separator);
     output.push('\n');
@@ -119,7 +176,10 @@ fn render_ai_slim_section(
         ("Model".to_string(), tools.claude_model.clone()),
         ("24h".to_string(), claude_24h),
     ];
-    claude_items.push(("7d".to_string(), format_token_breakdown_compact(&usage.claude.last_7d)));
+    claude_items.push((
+        "7d".to_string(),
+        format_token_breakdown_compact(&usage.claude.last_7d),
+    ));
 
     let codex_primary_label = format_limit_label(&usage.codex.primary_rate_limit);
     let codex_primary_value =
@@ -140,6 +200,9 @@ fn render_ai_slim_section(
     let copilot_sessions_str = copilot.total_sessions.map(format_number);
 
     let mut copilot_items: Vec<(String, String)> = Vec::new();
+    if copilot.is_loading {
+        copilot_items.push(("Plan".to_string(), COPILOT_LOADING_TEXT.to_string()));
+    }
     if let Some(ref quota) = copilot.quota {
         copilot_items.push(("Plan".to_string(), quota.plan.clone()));
         copilot_items.push(("Premium".to_string(), format_quota_entry(&quota.premium)));
@@ -160,7 +223,7 @@ fn render_ai_slim_section(
         "Sessions".to_string(),
         copilot_sessions_str.unwrap_or_else(|| "-".to_string()),
     ));
-    if copilot.quota.is_none() && copilot.total_requests.is_none() {
+    if !copilot.is_loading && copilot.quota.is_none() && copilot.total_requests.is_none() {
         copilot_items.push(("Hint".to_string(), copilot.hint.clone()));
     }
 
@@ -505,7 +568,9 @@ fn render_title_art() -> String {
 
             let (red, green, blue) =
                 gradient_color(visible_index, total_visible_chars, TITLE_GRADIENT_STOPS);
-            output.push_str(&format!("\u{1b}[38;2;{red};{green};{blue}m{character}{ANSI_RESET}"));
+            output.push_str(&format!(
+                "\u{1b}[38;2;{red};{green};{blue}m{character}{ANSI_RESET}"
+            ));
             visible_index += 1;
         }
         output.push('\n');
@@ -649,8 +714,7 @@ fn format_rate_limit_reset(
         .and_then(utc_datetime_to_epoch_secs)
         .map(|epoch_secs| local_datetime_from_epoch_secs(epoch_secs, local_time.offset_minutes));
 
-    if active_local
-        .map(|active| (active.year, active.month, active.day))
+    if active_local.map(|active| (active.year, active.month, active.day))
         == Some((reset_local.year, reset_local.month, reset_local.day))
     {
         format!(
@@ -827,7 +891,11 @@ fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
     let day = day_of_year - (153 * month_piece + 2) / 5 + 1;
     let month = month_piece + if month_piece < 10 { 3 } else { -9 };
 
-    (year + if month <= 2 { 1 } else { 0 }, month as u32, day as u32)
+    (
+        year + if month <= 2 { 1 } else { 0 },
+        month as u32,
+        day as u32,
+    )
 }
 
 fn run_command(command: &str, args: &[&str]) -> Option<String> {
@@ -897,8 +965,10 @@ fn format_number(value: u64) -> String {
 mod tests {
     use std::collections::HashMap;
 
-    use super::render_welcome_slim_with_width_and_context;
     use super::*;
+    use super::{
+        render_welcome_loading_with_width_and_context, render_welcome_slim_with_width_and_context,
+    };
     use crate::model::{
         ClaudeUsageSummary, CodexUsageSummary, PublicIpSource, PublicIpSummary, SystemSummary,
         UsageAvailability,
@@ -938,6 +1008,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn welcome_loading_render_matches_wide_snapshot() {
+        let snapshot = sample_loading_welcome_snapshot();
+        let output = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+        );
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-loading-wide.txt"))
+        );
+    }
+
+    #[test]
+    fn welcome_loading_render_matches_narrow_snapshot() {
+        let snapshot = sample_loading_welcome_snapshot();
+        let output = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            60,
+            &sample_local_time_context(),
+        );
+
+        assert_eq!(
+            normalize_snapshot(&output),
+            normalize_snapshot(snapshot_text("welcome-loading-narrow.txt"))
+        );
+    }
+
     fn sample_welcome_snapshot() -> WelcomeSnapshot {
         let fixture = fixture_map();
 
@@ -950,6 +1050,7 @@ mod tests {
                     address: fixture_value(&fixture, "system.public_ip.address"),
                     country_label: fixture_value(&fixture, "system.public_ip.country_label"),
                     source: PublicIpSource::Cache,
+                    is_loading: false,
                 },
                 proxy_label: fixture_value(&fixture, "system.proxy_label"),
             },
@@ -960,6 +1061,18 @@ mod tests {
             ai_usage: sample_ai_usage_summary(),
             copilot: sample_copilot_summary(),
         }
+    }
+
+    fn sample_loading_welcome_snapshot() -> WelcomeSnapshot {
+        let mut snapshot = sample_welcome_snapshot();
+        snapshot.system.public_ip = PublicIpSummary {
+            address: "-".to_string(),
+            country_label: String::new(),
+            source: PublicIpSource::Unavailable,
+            is_loading: true,
+        };
+        snapshot.copilot.is_loading = true;
+        snapshot
     }
 
     fn sample_ai_usage_summary() -> AiUsageSummary {
@@ -1024,6 +1137,7 @@ mod tests {
             availability: UsageAvailability::Live,
             model: "claude-sonnet-4.6".to_string(),
             plan_type: "Individual".to_string(),
+            is_loading: false,
             last_active_at: "2026-03-28 12:00 UTC".to_string(),
             total_requests: Some(585),
             last_24h_requests: Some(42),
@@ -1069,6 +1183,14 @@ mod tests {
             "welcome-slim-narrow.txt" => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/snapshots/welcome-slim-narrow.txt"
+            )),
+            "welcome-loading-wide.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-loading-wide.txt"
+            )),
+            "welcome-loading-narrow.txt" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/snapshots/welcome-loading-narrow.txt"
             )),
             other => panic!("unknown snapshot: {other}"),
         }

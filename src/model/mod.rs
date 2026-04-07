@@ -1,4 +1,25 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoadingState<T> {
+    Loading,
+    Loaded(T),
+    Error(String),
+    Skipped,
+}
+
+impl<T> LoadingState<T> {
+    pub fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        match self {
+            Self::Loaded(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemSummary {
     pub host_label: String,
     pub public_ip: PublicIpSummary,
@@ -10,6 +31,7 @@ pub struct PublicIpSummary {
     pub address: String,
     pub country_label: String,
     pub source: PublicIpSource,
+    pub is_loading: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +45,10 @@ pub enum PublicIpSource {
 impl PublicIpSummary {
     pub fn display_label(&self) -> String {
         let address = self.address.trim();
+        if self.is_loading && (address.is_empty() || address == "-") {
+            return "Loading...".to_string();
+        }
+
         if address.is_empty() || address == "-" {
             return "-".to_string();
         }
@@ -150,6 +176,7 @@ pub struct CopilotUsageSummary {
     pub availability: UsageAvailability,
     pub model: String,
     pub plan_type: String,
+    pub is_loading: bool,
     pub last_active_at: String,
     pub total_requests: Option<u64>,
     pub last_24h_requests: Option<u64>,
@@ -199,6 +226,7 @@ mod tests {
             address: "149.28.91.67".to_string(),
             country_label: "United States".to_string(),
             source: PublicIpSource::Cache,
+            is_loading: false,
         };
 
         assert_eq!(summary.display_label(), "United States 🇺🇸 · 149.28.91.67");
@@ -210,6 +238,7 @@ mod tests {
             address: "149.28.91.67".to_string(),
             country_label: "US".to_string(),
             source: PublicIpSource::Live,
+            is_loading: false,
         };
 
         assert_eq!(summary.display_label(), "US 🇺🇸 · 149.28.91.67");
@@ -221,8 +250,21 @@ mod tests {
             address: "149.28.91.67".to_string(),
             country_label: "Unknown Region".to_string(),
             source: PublicIpSource::Live,
+            is_loading: false,
         };
 
         assert_eq!(summary.display_label(), "Unknown Region · 149.28.91.67");
+    }
+
+    #[test]
+    fn display_label_shows_loading_when_ip_is_pending() {
+        let summary = PublicIpSummary {
+            address: "-".to_string(),
+            country_label: String::new(),
+            source: PublicIpSource::Unavailable,
+            is_loading: true,
+        };
+
+        assert_eq!(summary.display_label(), "Loading...");
     }
 }
