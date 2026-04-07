@@ -16,13 +16,15 @@ const TITLE_GRADIENT_STOPS: &[(u8, u8, u8)] = &[(180, 92, 255), (84, 119, 255), 
 const PROXY_ENABLED_STYLE: &str = "\u{1b}[30;48;2;92;255;128m";
 const PROXY_DISABLED_STYLE: &str = "\u{1b}[30;48;2;255;210;150m";
 pub const IP_LOADING_TEXT: &str = "Loading...";
-pub const COPILOT_LOADING_TEXT: &str = "Loading...";
+pub const COPILOT_LOADING_TEXT: &str = "Loading Copilot...";
 
 pub mod ansi {
     pub const HIDE_CURSOR: &str = "\x1b[?25l";
     pub const SHOW_CURSOR: &str = "\x1b[?25h";
     pub const CLEAR_LINE: &str = "\x1b[2K";
     pub const CLEAR_UNTIL_END: &str = "\x1b[0J";
+    pub const LOADING_FRAME_INTERVAL_MILLIS: u64 = 120;
+    const LOADING_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     pub fn move_up(lines: usize) -> String {
         if lines == 0 {
@@ -38,6 +40,14 @@ pub mod ansi {
 
     pub fn line_count(text: &str) -> usize {
         text.lines().count()
+    }
+
+    pub fn loading_spinner_frame(frame_index: usize) -> &'static str {
+        LOADING_SPINNER_FRAMES[frame_index % LOADING_SPINNER_FRAMES.len()]
+    }
+
+    pub fn animated_loading_label(label: &str, frame_index: usize) -> String {
+        format!("{} {}", loading_spinner_frame(frame_index), label)
     }
 }
 
@@ -61,7 +71,11 @@ pub fn render_welcome_slim(snapshot: &WelcomeSnapshot) -> String {
 }
 
 pub fn render_welcome_loading(snapshot: &WelcomeSnapshot) -> String {
-    render_welcome_loading_with_width(snapshot, resolve_total_width())
+    render_welcome_loading_frame(snapshot, 0)
+}
+
+pub fn render_welcome_loading_frame(snapshot: &WelcomeSnapshot, frame_index: usize) -> String {
+    render_welcome_loading_with_width(snapshot, resolve_total_width(), frame_index)
 }
 
 pub fn render_refresh(previous_output: &str, next_output: &str) -> String {
@@ -79,17 +93,22 @@ pub fn render_refresh(previous_output: &str, next_output: &str) -> String {
     )
 }
 
-fn render_welcome_loading_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
+fn render_welcome_loading_with_width(
+    snapshot: &WelcomeSnapshot,
+    total_width: usize,
+    frame_index: usize,
+) -> String {
     let local_time = resolve_local_time_context();
-    render_welcome_loading_with_width_and_context(snapshot, total_width, &local_time)
+    render_welcome_loading_with_width_and_context(snapshot, total_width, &local_time, frame_index)
 }
 
 fn render_welcome_loading_with_width_and_context(
     snapshot: &WelcomeSnapshot,
     total_width: usize,
     local_time: &LocalTimeContext,
+    frame_index: usize,
 ) -> String {
-    render_welcome_slim_with_width_and_context(snapshot, total_width, local_time)
+    render_welcome_with_width_and_context(snapshot, total_width, local_time, Some(frame_index))
 }
 
 fn render_welcome_slim_with_width(snapshot: &WelcomeSnapshot, total_width: usize) -> String {
@@ -101,6 +120,15 @@ fn render_welcome_slim_with_width_and_context(
     snapshot: &WelcomeSnapshot,
     total_width: usize,
     local_time: &LocalTimeContext,
+) -> String {
+    render_welcome_with_width_and_context(snapshot, total_width, local_time, None)
+}
+
+fn render_welcome_with_width_and_context(
+    snapshot: &WelcomeSnapshot,
+    total_width: usize,
+    local_time: &LocalTimeContext,
+    loading_frame: Option<usize>,
 ) -> String {
     let mut output = String::new();
 
@@ -119,10 +147,13 @@ fn render_welcome_slim_with_width_and_context(
         &snapshot.copilot,
         total_width,
         local_time,
+        loading_frame,
     );
     let separator = ai_section.lines().next().unwrap_or("").to_string();
     let public_ip_label = if snapshot.system.public_ip.is_loading {
-        IP_LOADING_TEXT.to_string()
+        loading_frame
+            .map(|frame_index| ansi::animated_loading_label(IP_LOADING_TEXT, frame_index))
+            .unwrap_or_else(|| IP_LOADING_TEXT.to_string())
     } else {
         snapshot.system.public_ip.display_label()
     };
@@ -170,6 +201,7 @@ fn render_ai_slim_section(
     copilot: &CopilotUsageSummary,
     total_width: usize,
     local_time: &LocalTimeContext,
+    loading_frame: Option<usize>,
 ) -> String {
     let claude_24h = format_token_breakdown_compact(&usage.claude.last_24h);
     let mut claude_items: Vec<(String, String)> = vec![
@@ -201,7 +233,10 @@ fn render_ai_slim_section(
 
     let mut copilot_items: Vec<(String, String)> = Vec::new();
     if copilot.is_loading {
-        copilot_items.push(("Plan".to_string(), COPILOT_LOADING_TEXT.to_string()));
+        let loading_label = loading_frame
+            .map(|frame_index| ansi::animated_loading_label(COPILOT_LOADING_TEXT, frame_index))
+            .unwrap_or_else(|| COPILOT_LOADING_TEXT.to_string());
+        copilot_items.push(("Plan".to_string(), loading_label));
     }
     if let Some(ref quota) = copilot.quota {
         copilot_items.push(("Plan".to_string(), quota.plan.clone()));
@@ -477,6 +512,7 @@ fn display_width(text: &str) -> usize {
 fn char_display_width(character: char) -> usize {
     if character.is_ascii()
         || matches!(character, '·' | '•' | '…' | '█' | '░')
+        || is_braille_pattern(character)
         || is_regional_indicator(character)
         || matches!(u32::from(character), 0x2500..=0x257F)
     {
@@ -488,6 +524,10 @@ fn char_display_width(character: char) -> usize {
 
 fn is_regional_indicator(character: char) -> bool {
     matches!(u32::from(character), 0x1F1E6..=0x1F1FF)
+}
+
+fn is_braille_pattern(character: char) -> bool {
+    matches!(u32::from(character), 0x2800..=0x28FF)
 }
 
 fn is_box_drawing(character: char) -> bool {
@@ -1015,6 +1055,7 @@ mod tests {
             &snapshot,
             100,
             &sample_local_time_context(),
+            0,
         );
 
         assert_eq!(
@@ -1030,12 +1071,41 @@ mod tests {
             &snapshot,
             60,
             &sample_local_time_context(),
+            0,
         );
 
         assert_eq!(
             normalize_snapshot(&output),
             normalize_snapshot(snapshot_text("welcome-loading-narrow.txt"))
         );
+    }
+
+    #[test]
+    fn welcome_loading_render_advances_spinner_frames() {
+        let snapshot = sample_loading_welcome_snapshot();
+        let first = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+            0,
+        );
+        let second = render_welcome_loading_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+            1,
+        );
+
+        assert!(first.contains("⠋ Loading..."));
+        assert!(first.contains("⠋ Loading Copilot..."));
+        assert!(second.contains("⠙ Loading..."));
+        assert!(second.contains("⠙ Loading Copilot..."));
+        assert_ne!(normalize_snapshot(&first), normalize_snapshot(&second));
+    }
+
+    #[test]
+    fn loading_animation_interval_stays_within_target_range() {
+        assert!((100..=200).contains(&ansi::LOADING_FRAME_INTERVAL_MILLIS));
     }
 
     fn sample_welcome_snapshot() -> WelcomeSnapshot {
