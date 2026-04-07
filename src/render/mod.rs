@@ -739,17 +739,23 @@ fn format_quota_entry(entry: &CopilotQuotaEntry) -> String {
         return "unlimited".to_string();
     }
 
+    let progress_bar = format_remaining_bar_x10(entry.percent_remaining_x10, 10);
     let whole = entry.percent_remaining_x10 / 10;
     let frac = entry.percent_remaining_x10 % 10;
     format!(
-        "{}/{} ({whole}.{frac}%)",
+        "{}/{} [{}] {whole}.{frac}% left",
         format_number(entry.remaining),
         format_number(entry.entitlement),
+        progress_bar,
     )
 }
 
 fn format_remaining_bar(remaining_percent: u8, slots: usize) -> String {
-    let filled = (((remaining_percent as usize) * slots) + 50) / 100;
+    format_remaining_bar_x10(u64::from(remaining_percent) * 10, slots)
+}
+
+fn format_remaining_bar_x10(remaining_percent_x10: u64, slots: usize) -> String {
+    let filled = (((remaining_percent_x10 as usize) * slots) + 500) / 1000;
     let filled = filled.min(slots);
     format!("{}{}", "█".repeat(filled), "░".repeat(slots - filled))
 }
@@ -1026,8 +1032,8 @@ mod tests {
         render_welcome_loading_with_width_and_context, render_welcome_slim_with_width_and_context,
     };
     use crate::model::{
-        ClaudeUsageSummary, CodexUsageSummary, PublicIpSource, PublicIpSummary, SystemSummary,
-        UsageAvailability,
+        ClaudeUsageSummary, CodexUsageSummary, CopilotQuotaInfo, PublicIpSource, PublicIpSummary,
+        SystemSummary, UsageAvailability,
     };
 
     fn sample_local_time_context() -> LocalTimeContext {
@@ -1142,6 +1148,38 @@ mod tests {
         assert!((100..=200).contains(&ansi::LOADING_FRAME_INTERVAL_MILLIS));
     }
 
+    #[test]
+    fn quota_entry_formats_progress_bar_like_codex_limit() {
+        let entry = CopilotQuotaEntry {
+            entitlement: 300,
+            remaining: 287,
+            percent_remaining_x10: 956,
+            unlimited: false,
+        };
+
+        assert_eq!(
+            format_quota_entry(&entry),
+            "287/300 [██████████] 95.6% left"
+        );
+    }
+
+    #[test]
+    fn welcome_slim_render_shows_copilot_quota_progress_bar() {
+        let mut snapshot = sample_welcome_snapshot();
+        snapshot.copilot.quota = Some(sample_copilot_quota_info());
+
+        let output = render_welcome_slim_with_width_and_context(
+            &snapshot,
+            100,
+            &sample_local_time_context(),
+        );
+
+        assert!(output.contains("Premium"));
+        assert!(output.contains("287/300 [██████████] 95.6% left"));
+        assert!(output.contains("Chat"));
+        assert!(output.contains("unlimited"));
+    }
+
     fn sample_welcome_snapshot() -> WelcomeSnapshot {
         let fixture = fixture_map();
 
@@ -1249,6 +1287,32 @@ mod tests {
             remaining_percent: None,
             hint: "Run /usage in Copilot CLI for quota details".to_string(),
             quota: None,
+        }
+    }
+
+    fn sample_copilot_quota_info() -> CopilotQuotaInfo {
+        CopilotQuotaInfo {
+            login: "pengxu-liu_nioer".to_string(),
+            plan: "business".to_string(),
+            reset_date: "2026-05-01".to_string(),
+            premium: CopilotQuotaEntry {
+                entitlement: 300,
+                remaining: 287,
+                percent_remaining_x10: 956,
+                unlimited: false,
+            },
+            chat: CopilotQuotaEntry {
+                entitlement: 0,
+                remaining: 0,
+                percent_remaining_x10: 1000,
+                unlimited: true,
+            },
+            completions: CopilotQuotaEntry {
+                entitlement: 0,
+                remaining: 0,
+                percent_remaining_x10: 1000,
+                unlimited: true,
+            },
         }
     }
 
