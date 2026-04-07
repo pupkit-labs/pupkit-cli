@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.6 - 2026-04-07
+
+### Changed / 改进
+
+- Added a visual progress bar and remaining percentage text to GitHub Copilot quota rows in the welcome view. / 为 welcome 页面中的 GitHub Copilot quota 行增加可视化进度条和剩余百分比文本。
+
+### Testing / 测试
+
+- Added renderer tests covering the new Copilot quota formatting and welcome output. / 为新的 Copilot quota 格式和 welcome 输出补充渲染测试。
+
 ## 0.0.5 - 2026-04-05
 
 ### Changed / 改进
