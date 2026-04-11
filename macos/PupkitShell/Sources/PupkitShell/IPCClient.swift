@@ -31,8 +31,15 @@ actor IPCClient {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
+        let maxPathLength = MemoryLayout.size(ofValue: addr.sun_path)
+        guard socketPath.utf8.count < maxPathLength else {
+            throw NSError(domain: "PupkitShell", code: 5, userInfo: [NSLocalizedDescriptionKey: "Socket path too long"])
+        }
         withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
-            socketPath.withCString { _ = strcpy(ptr, $0) }
+            ptr.initialize(to: 0)
+            socketPath.withCString { cString in
+                strncpy(ptr, cString, maxPathLength - 1)
+            }
         }
 
         let connectResult = withUnsafePointer(to: &addr) { ptr in

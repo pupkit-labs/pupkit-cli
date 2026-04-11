@@ -7,7 +7,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::daemon::PupkitDaemon;
-use crate::protocol::{ClientRequest, ServerResponse, SessionEventKind};
+use crate::protocol::{
+    ClientRequest, HookDecision, ServerResponse, SessionEventKind, SessionStatus,
+};
 
 #[derive(Clone)]
 pub struct DaemonServer {
@@ -38,9 +40,18 @@ impl DaemonServer {
                         .lock()
                         .unwrap()
                         .ingest_blocking_event(envelope.event)?;
-                    Ok(ServerResponse::HookDecision(
-                        waiter.wait_for_decision(self.request_timeout),
-                    ))
+                    let decision = waiter.wait_for_decision(self.request_timeout);
+
+                    if let HookDecision::Timeout { request_id }
+                    | HookDecision::Cancelled { request_id } = &decision
+                    {
+                        self.daemon
+                            .lock()
+                            .unwrap()
+                            .cleanup_request(request_id, SessionStatus::Running)?;
+                    }
+
+                    Ok(ServerResponse::HookDecision(decision))
                 } else {
                     self.daemon.lock().unwrap().ingest_event(envelope.event)?;
                     Ok(ServerResponse::Ack)
@@ -61,12 +72,21 @@ impl DaemonServer {
 
     pub fn serve_stream(&self, mut stream: UnixStream) -> Result<(), String> {
         let mut request_body = String::new();
-        stream
-            .read_to_string(&mut request_body)
-            .map_err(|error| format!("failed to read client request: {error}"))?;
-        let request: ClientRequest = serde_json::from_str(&request_body)
-            .map_err(|error| format!("failed to parse client request: {error}"))?;
-        let response = self.handle_client_request(request)?;
+        let response = match stream.read_to_string(&mut request_body) {
+            Ok(_) => match serde_json::from_str::<ClientRequest>(&request_body) {
+                Ok(request) => match self.handle_client_request(request) {
+                    Ok(response) => response,
+                    Err(error) => ServerResponse::Error { message: error },
+                },
+                Err(error) => ServerResponse::Error {
+                    message: format!("failed to parse client request: {error}"),
+                },
+            },
+            Err(error) => ServerResponse::Error {
+                message: format!("failed to read client request: {error}"),
+            },
+        };
+
         let response_body = serde_json::to_string(&response)
             .map_err(|error| format!("failed to serialize server response: {error}"))?;
         stream

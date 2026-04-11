@@ -5,7 +5,7 @@ use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
 use crate::daemon::{DaemonConfig, SessionRegistry, select_top_session};
 use crate::protocol::{
     ApprovalBehavior, AttentionCard, AttentionKind, AttentionSnapshot, CompletionItem,
-    HookDecision, SessionEvent, SessionEventKind, SessionEventPayload, SessionListItem,
+    HookDecision, RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionListItem,
     SessionSnapshot, SessionStatus, UiAction, UiStateSnapshot, UserAnswer,
 };
 
@@ -185,6 +185,28 @@ impl PupkitDaemon {
         }
     }
 
+    pub fn cleanup_request(
+        &mut self,
+        request_id: &RequestId,
+        next_status: SessionStatus,
+    ) -> Result<(), String> {
+        self.pending.abandon_request(request_id);
+        for snapshot in self.registry.all() {
+            if snapshot
+                .attention
+                .as_ref()
+                .is_some_and(|attention| &attention.request_id == request_id)
+            {
+                let mut updated = snapshot.clone();
+                updated.status = next_status.clone();
+                updated.attention = None;
+                self.registry.upsert(updated);
+                break;
+            }
+        }
+        self.persist_state()
+    }
+
     pub fn apply_ui_action(&mut self, action: UiAction) -> Result<Option<HookDecision>, String> {
         let decision = match action {
             UiAction::Approve { request_id, always } => self.pending.resolve_approval(
@@ -223,22 +245,11 @@ impl PupkitDaemon {
         });
 
         if let Some(request_id) = resolved_request_id {
-            for snapshot in self.registry.all() {
-                if snapshot
-                    .attention
-                    .as_ref()
-                    .is_some_and(|attention| attention.request_id == request_id)
-                {
-                    let mut updated = snapshot.clone();
-                    updated.status = SessionStatus::Running;
-                    updated.attention = None;
-                    self.registry.upsert(updated);
-                    break;
-                }
-            }
+            self.cleanup_request(&request_id, SessionStatus::Running)?;
+        } else {
+            self.persist_state()?;
         }
 
-        self.persist_state()?;
         Ok(decision)
     }
 

@@ -1,8 +1,24 @@
-use pupkit::daemon::PupkitDaemon;
+use pupkit::daemon::{DaemonConfig, PupkitDaemon};
 use pupkit::protocol::{
     ApprovalBehavior, HookDecision, RequestId, SessionEvent, SessionEventKind, SessionEventPayload,
     SessionId, SessionSnapshot, SessionStatus, SourceKind, UiAction,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn temp_config(name: &str) -> DaemonConfig {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "pupkit-protocol-{name}-{ts}-{}",
+        std::process::id()
+    ));
+    DaemonConfig {
+        socket_path: root.join("pupkitd.sock"),
+        state_path: root.join("daemon-state.json"),
+    }
+}
 
 #[test]
 fn protocol_roundtrip_keeps_session_identity() {
@@ -48,7 +64,7 @@ fn hook_decision_serializes_approval_behavior() {
 
 #[test]
 fn daemon_ingests_and_resolves_approval_flow() {
-    let mut daemon = PupkitDaemon::bootstrap();
+    let mut daemon = PupkitDaemon::for_config(temp_config("approval-flow"));
     daemon
         .ingest_event(
             SessionEvent::new(
