@@ -1,63 +1,252 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Island State
+
+enum IslandStatus {
+    case closed
+    case opened
+}
+
+// MARK: - Controller
+
 @MainActor
 final class NotchPanelController {
     private var panel: NSPanel?
     private var latestSnapshot: UiStateSnapshot?
     private var ipcClient: IPCClient?
     private var onStateUpdate: ((UiStateSnapshot) -> Void)?
+    private var islandStatus: IslandStatus = .closed
+    private var globalMoveMonitor: Any?
+    private var globalClickMonitor: Any?
+    private var hoverTimer: DispatchWorkItem?
+    private var closeTimer: DispatchWorkItem?
+    private var notchRect: NSRect = .zero
+
+    var isVisible: Bool { panel?.isVisible == true }
 
     func configure(ipcClient: IPCClient, onStateUpdate: @escaping (UiStateSnapshot) -> Void) {
         self.ipcClient = ipcClient
         self.onStateUpdate = onStateUpdate
+        let screen = targetScreen()
+        let maxSize = panelMaxSize(on: screen)
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 120),
+            contentRect: NSRect(x: 0, y: 0, width: maxSize.width, height: maxSize.height),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        panel.isFloatingPanel = true
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSHostingView(rootView: NotchPanelView(snapshot: nil, onAction: { _ in }))
-        position(panel: panel)
+        panel.hasShadow = false
+        panel.isMovable = false
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+
+        let hostView = NSHostingView(rootView: IslandContentView(
+            snapshot: nil,
+            isOpened: false,
+            closedNotchWidth: screen.notchSize.width,
+            closedNotchHeight: screen.islandClosedHeight,
+            onAction: { _ in },
+            onClose: { }
+        ))
+        hostView.wantsLayer = true
+        hostView.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = hostView
+
         self.panel = panel
+        positionPanel(panel, on: screen)
+        computeNotchRect(screen: screen)
+        panel.orderFrontRegardless()
+        panel.ignoresMouseEvents = true
+        startEventMonitoring()
     }
 
     func apply(snapshot: UiStateSnapshot?) {
+        let previousAttention = latestSnapshot?.top_attention?.request_id
         latestSnapshot = snapshot
-        if let hostingView = panel?.contentView as? NSHostingView<NotchPanelView> {
-            hostingView.rootView = NotchPanelView(snapshot: snapshot, onAction: { [weak self] action in
-                self?.handleAction(action)
-            })
-        }
-        if snapshot?.top_attention != nil {
-            panel?.orderFrontRegardless()
-        } else {
-            panel?.orderOut(nil)
+        updateView()
+
+        let hasAttention = snapshot?.top_attention != nil
+        let isNewAttention = hasAttention && snapshot?.top_attention?.request_id != previousAttention
+        if isNewAttention && islandStatus == .closed {
+            openIsland()
         }
     }
 
     func togglePanel() {
-        guard let panel else { return }
-        if panel.isVisible {
-            panel.orderOut(nil)
+        if islandStatus == .opened {
+            closeIsland()
         } else {
-            position(panel: panel)
+            openIsland()
+        }
+    }
+
+    // MARK: - State transitions
+
+    private func openIsland() {
+        cancelTimers()
+        islandStatus = .opened
+        panel?.ignoresMouseEvents = false
+        panel?.acceptsMouseMovedEvents = true
+        updateView()
+    }
+
+    private func closeIsland() {
+        cancelTimers()
+        islandStatus = .closed
+        panel?.ignoresMouseEvents = true
+        panel?.acceptsMouseMovedEvents = false
+        updateView()
+    }
+
+    // MARK: - View update
+
+    private func updateView() {
+        guard let panel else { return }
+        let screen = targetScreen()
+        let isOpened = islandStatus == .opened
+
+        if let hostView = panel.contentView as? NSHostingView<IslandContentView> {
+            hostView.rootView = IslandContentView(
+                snapshot: latestSnapshot,
+                isOpened: isOpened,
+                closedNotchWidth: screen.notchSize.width,
+                closedNotchHeight: screen.islandClosedHeight,
+                onAction: { [weak self] action in self?.handleAction(action) },
+                onClose: { [weak self] in self?.closeIsland() }
+            )
+        }
+
+        if !panel.isVisible {
             panel.orderFrontRegardless()
         }
     }
 
-    private func position(panel: NSPanel) {
-        guard let screen = NSScreen.main else { return }
-        let frame = screen.visibleFrame
-        let x = frame.midX - panel.frame.width / 2
-        let y = frame.maxY - panel.frame.height - 6
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    // MARK: - Positioning
+
+    private func panelMaxSize(on screen: NSScreen) -> CGSize {
+        let insetH = IslandMetrics.openedShadowHorizontalInset
+        let insetB = IslandMetrics.openedShadowBottomInset
+        let openedWidth = IslandMetrics.openedPanelWidth
+        let contentHeight: CGFloat = 220
+        let width = openedWidth + (insetH * 2) + 28
+        let height = screen.islandClosedHeight + contentHeight + insetB
+        return CGSize(width: width, height: height)
     }
+
+    private func positionPanel(_ panel: NSPanel, on screen: NSScreen) {
+        let size = panel.frame.size
+        let x = screen.frame.midX - size.width / 2
+        let y = screen.frame.maxY - size.height
+        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+    }
+
+    private func computeNotchRect(screen: NSScreen) {
+        let ns = screen.notchSize
+        let sf = screen.frame
+        notchRect = NSRect(
+            x: sf.midX - ns.width / 2,
+            y: sf.maxY - ns.height,
+            width: ns.width,
+            height: ns.height
+        )
+    }
+
+    private func targetScreen() -> NSScreen {
+        NSScreen.screens.first(where: { $0.hasNotch }) ?? NSScreen.main ?? NSScreen.screens[0]
+    }
+
+    // MARK: - Mouse event monitoring
+
+    private func startEventMonitoring() {
+        globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            Task { @MainActor in
+                self?.handleMouseMoved(NSEvent.mouseLocation)
+            }
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            Task { @MainActor in
+                self?.handleMouseDown(NSEvent.mouseLocation)
+            }
+        }
+    }
+
+    private func handleMouseMoved(_ loc: NSPoint) {
+        let inNotch = isPointInClosedArea(loc)
+        if islandStatus == .closed && inNotch {
+            scheduleOpen()
+        } else if islandStatus == .closed && !inNotch {
+            cancelOpenTimer()
+        }
+        if islandStatus == .opened && !isPointInExpandedArea(loc) {
+            scheduleClose()
+        } else if islandStatus == .opened && isPointInExpandedArea(loc) {
+            cancelCloseTimer()
+        }
+    }
+
+    private func handleMouseDown(_ loc: NSPoint) {
+        if islandStatus == .closed && isPointInClosedArea(loc) {
+            cancelTimers()
+            openIsland()
+        } else if islandStatus == .opened && !isPointInExpandedArea(loc) {
+            closeIsland()
+        }
+    }
+
+    private func isPointInClosedArea(_ pt: NSPoint) -> Bool {
+        notchRect.insetBy(dx: -20, dy: -8).contains(pt)
+    }
+
+    private func isPointInExpandedArea(_ pt: NSPoint) -> Bool {
+        guard let panel else { return false }
+        return panel.frame.contains(pt)
+    }
+
+    // MARK: - Timers
+
+    private func scheduleOpen() {
+        guard hoverTimer == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.hoverTimer = nil
+            self?.openIsland()
+        }
+        hoverTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + IslandMetrics.hoverOpenDelay, execute: item)
+    }
+
+    private func scheduleClose() {
+        guard closeTimer == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.closeTimer = nil
+            self?.closeIsland()
+        }
+        closeTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + IslandMetrics.hoverCloseDelay, execute: item)
+    }
+
+    private func cancelOpenTimer() {
+        hoverTimer?.cancel()
+        hoverTimer = nil
+    }
+
+    private func cancelCloseTimer() {
+        closeTimer?.cancel()
+        closeTimer = nil
+    }
+
+    private func cancelTimers() {
+        cancelOpenTimer()
+        cancelCloseTimer()
+    }
+
+    // MARK: - IPC action
 
     private func handleAction(_ action: UiAction) {
         guard let ipcClient else { return }
@@ -65,7 +254,8 @@ final class NotchPanelController {
             do {
                 let updatedState = try await ipcClient.sendUiAction(action)
                 await MainActor.run {
-                    self.apply(snapshot: updatedState)
+                    self.latestSnapshot = updatedState
+                    self.updateView()
                     self.onStateUpdate?(updatedState)
                 }
             } catch {
@@ -73,29 +263,212 @@ final class NotchPanelController {
             }
         }
     }
+
+    deinit {
+        if let m = globalMoveMonitor { NSEvent.removeMonitor(m) }
+        if let m = globalClickMonitor { NSEvent.removeMonitor(m) }
+    }
 }
 
-private struct NotchPanelView: View {
+// MARK: - Animations
+
+private let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
+private let closeAnimation = Animation.smooth(duration: 0.3)
+
+// MARK: - Island Content View
+
+struct IslandContentView: View {
     let snapshot: UiStateSnapshot?
+    let isOpened: Bool
+    let closedNotchWidth: CGFloat
+    let closedNotchHeight: CGFloat
     let onAction: (UiAction) -> Void
+    let onClose: () -> Void
+
+    @State private var isHovering = false
+
+    private var hasAttention: Bool { snapshot?.top_attention != nil }
+    private var hasAnySessions: Bool { (snapshot?.sessions.count ?? 0) > 0 }
+
+    private var notchAnimation: Animation {
+        isOpened ? openAnimation : closeAnimation
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(snapshot?.top_attention?.title ?? "Pupkit")
-                .font(.headline)
-            Text(snapshot?.top_attention?.message ?? "No pending attention")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                Color.clear
+
+                islandSurface(availableSize: geo.size)
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .ignoresSafeArea()
+        .preferredColorScheme(.dark)
+    }
+
+    @ViewBuilder
+    private func islandSurface(availableSize: CGSize) -> some View {
+        let insetH = IslandMetrics.openedShadowHorizontalInset
+        let insetB = IslandMetrics.openedShadowBottomInset
+        let layoutWidth = max(0, availableSize.width - (insetH * 2))
+        let layoutHeight = max(0, availableSize.height - insetB)
+
+        let openedWidth = min(IslandMetrics.openedPanelWidth, layoutWidth - 28)
+        let openedHeight = max(closedNotchHeight, layoutHeight - 14)
+
+        let closedWidth = closedNotchWidth
+        let closedHeight = closedNotchHeight
+
+        let currentWidth = isOpened ? openedWidth : closedWidth
+        let currentHeight = isOpened ? openedHeight : closedHeight
+
+        let shape = NotchShape(
+            topCornerRadius: isOpened ? NotchShape.openedTopRadius : NotchShape.closedTopRadius,
+            bottomCornerRadius: isOpened ? NotchShape.openedBottomRadius : NotchShape.closedBottomRadius
+        )
+
+        VStack(spacing: 0) {
+            ZStack(alignment: .top) {
+                // Background shape
+                shape
+                    .fill(Color.black)
+                    .frame(width: currentWidth, height: currentHeight)
+
+                VStack(spacing: 0) {
+                    // Header row (always in notch height)
+                    headerRow
+                        .frame(height: closedNotchHeight)
+
+                    // Expandable content
+                    if isOpened {
+                        openedContent
+                            .frame(width: openedWidth - 32)
+                            .frame(maxHeight: currentHeight - closedNotchHeight - 12, alignment: .top)
+                            .clipped()
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .frame(width: currentWidth, height: currentHeight, alignment: .top)
+                .clipShape(shape)
+
+                // Top-edge strip for notch blend
+                Rectangle()
+                    .fill(Color.black)
+                    .frame(height: 1)
+                    .padding(.horizontal, isOpened ? NotchShape.openedTopRadius : NotchShape.closedTopRadius)
+
+                // Border stroke
+                shape
+                    .stroke(Color.white.opacity(isOpened ? 0.07 : 0.04), lineWidth: 1)
+                    .frame(width: currentWidth, height: currentHeight)
+            }
+            .frame(width: currentWidth, height: currentHeight, alignment: .top)
+        }
+        .scaleEffect(isOpened ? 1 : (isHovering ? IslandMetrics.closedHoverScale : 1), anchor: .top)
+        .padding(.horizontal, insetH)
+        .padding(.bottom, insetB)
+        .animation(notchAnimation, value: isOpened)
+        .animation(.spring(response: 0.38, dampingFraction: 0.8), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+    }
+
+    // MARK: - Header Row
+
+    @ViewBuilder
+    private var headerRow: some View {
+        if isOpened {
+            HStack {
+                HStack(spacing: 6) {
+                    Text("🐶")
+                        .font(.system(size: 14))
+                    Text("Pupkit")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                Spacer()
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+        } else {
+            HStack(spacing: 0) {
+                if hasAnySessions || hasAttention {
+                    HStack(spacing: 4) {
+                        Text("🐶")
+                            .font(.system(size: 12))
+                        if hasAttention {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 6, height: 6)
+                        } else {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .frame(width: 36)
+                }
+
+                Spacer()
+
+                if hasAnySessions {
+                    Text("\(snapshot?.sessions.count ?? 0)")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(width: 28)
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+    }
+
+    // MARK: - Opened Content
+
+    @ViewBuilder
+    private var openedContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
             if let attention = snapshot?.top_attention {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(attention.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(attention.message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(3)
+                }
+
                 actionButtons(for: attention)
+            } else if hasAnySessions {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(snapshot?.sessions.count ?? 0) active session(s)")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                    Text("No pending actions")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+            } else {
+                Text("No active sessions")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.4))
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .padding(8)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
+
+    // MARK: - Action Buttons
 
     @ViewBuilder
     private func actionButtons(for attention: AttentionCard) -> some View {
@@ -106,9 +479,10 @@ private struct NotchPanelView: View {
                     onAction(.approve(requestId: attention.request_id, always: false))
                 } label: {
                     Text("Allow")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
                         .background(Color.green, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -117,9 +491,10 @@ private struct NotchPanelView: View {
                     onAction(.approve(requestId: attention.request_id, always: true))
                 } label: {
                     Text("Always Allow")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
                         .background(Color.green.opacity(0.6), in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -128,9 +503,10 @@ private struct NotchPanelView: View {
                     onAction(.deny(requestId: attention.request_id))
                 } label: {
                     Text("Deny")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
                         .background(Color.red, in: Capsule())
                 }
                 .buttonStyle(.plain)
@@ -143,9 +519,10 @@ private struct NotchPanelView: View {
                         onAction(.answerOption(requestId: attention.request_id, optionId: option))
                     } label: {
                         Text(option)
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
                             .background(Color.blue, in: Capsule())
                     }
                     .buttonStyle(.plain)
