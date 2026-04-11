@@ -8,6 +8,7 @@ pub use action::{ApprovalBehavior, HookDecision, UserAnswer};
 pub use event::{SessionEvent, SessionEventKind, SessionEventPayload};
 pub use ids::{RequestId, SessionId};
 pub use ipc::{
-    AttentionCard, CompletionItem, HookEnvelope, SessionListItem, UiAction, UiStateSnapshot,
+    AttentionCard, ClientRequest, CompletionItem, HookEnvelope, ServerResponse, SessionListItem,
+    UiAction, UiStateSnapshot,
 };
 pub use session::{AttentionKind, AttentionSnapshot, SessionSnapshot, SessionStatus, SourceKind};
