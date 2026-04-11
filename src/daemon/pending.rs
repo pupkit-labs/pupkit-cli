@@ -91,6 +91,11 @@ pub struct PendingStore {
 
 impl PendingStore {
     pub fn insert(&mut self, request: PendingRequest) {
+        if let Some(previous) = self.requests.remove(&request.request_id) {
+            previous.fulfill(HookDecision::Cancelled {
+                request_id: previous.request_id.clone(),
+            });
+        }
         self.request_order.retain(|id| id != &request.request_id);
         self.request_order.push(request.request_id.clone());
         self.requests.insert(request.request_id.clone(), request);
@@ -115,6 +120,10 @@ impl PendingStore {
                 });
             }
         }
+    }
+
+    pub fn abandon_request(&mut self, request_id: &RequestId) {
+        let _ = self.remove(request_id);
     }
 
     pub fn resolve_approval(

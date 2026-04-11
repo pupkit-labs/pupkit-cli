@@ -3,6 +3,7 @@ use pupkit::protocol::{
     ApprovalBehavior, ClientRequest, HookEnvelope, RequestId, ServerResponse, SessionEvent,
     SessionEventKind, SessionEventPayload, SessionId, SourceKind, UiAction,
 };
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn temp_config(name: &str) -> DaemonConfig {
@@ -61,4 +62,63 @@ fn ui_action_unblocks_blocking_hook_request() {
             ..
         })
     ));
+}
+
+#[test]
+fn timeout_clears_waiting_attention_state() {
+    let daemon = PupkitDaemon::for_config(temp_config("timeout"));
+    let server = DaemonServer::new(daemon, Duration::from_millis(50));
+
+    let response = server
+        .handle_client_request(ClientRequest::Hook(HookEnvelope {
+            event: SessionEvent::new(
+                SourceKind::ClaudeCode,
+                SessionId::new("session-timeout"),
+                SessionEventKind::ApprovalRequested,
+            )
+            .with_title("demo")
+            .with_payload(SessionEventPayload::ApprovalRequest {
+                request_id: RequestId::new("req-timeout"),
+                tool_name: "Edit".to_string(),
+                tool_input_summary: "update src/lib.rs".to_string(),
+            }),
+            expects_response: true,
+        }))
+        .unwrap();
+
+    assert!(matches!(
+        response,
+        ServerResponse::HookDecision(pupkit::protocol::HookDecision::Timeout { .. })
+    ));
+
+    let state = server
+        .handle_client_request(ClientRequest::StateSnapshot)
+        .unwrap();
+    match state {
+        ServerResponse::StateSnapshot(snapshot) => {
+            assert!(snapshot.top_attention.is_none());
+        }
+        other => panic!("unexpected state response: {other:?}"),
+    }
+}
+
+#[test]
+fn malformed_stream_returns_structured_error_response() {
+    let daemon = PupkitDaemon::for_config(temp_config("bad-json"));
+    let server = DaemonServer::new(daemon, Duration::from_secs(1));
+    let (client, server_stream) = UnixStream::pair().unwrap();
+
+    let handle = std::thread::spawn(move || {
+        server.serve_stream(server_stream).unwrap();
+    });
+
+    use std::io::{Read, Write};
+    let mut client = client;
+    client.write_all(b"not json").unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut buf = String::new();
+    client.read_to_string(&mut buf).unwrap();
+    handle.join().unwrap();
+
+    assert!(buf.contains("Error"));
 }
