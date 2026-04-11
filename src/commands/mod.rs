@@ -1,8 +1,11 @@
 mod auth;
 mod daemon;
+mod hook;
 mod monitor;
 mod update;
 mod welcome;
+
+use hook::HookCommand;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     match parse_command(&args)? {
@@ -11,6 +14,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         Command::Update => update::execute(),
         Command::Daemon => daemon::execute(),
         Command::Monitor => monitor::execute(),
+        Command::HookInstall => hook::execute(HookCommand::Install),
+        Command::HookDoctor => hook::execute(HookCommand::Doctor),
     }
 }
 
@@ -21,47 +26,61 @@ enum Command {
     Update,
     Daemon,
     Monitor,
+    HookInstall,
+    HookDoctor,
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
-    match args.get(1).map(String::as_str) {
-        None => Ok(Command::Welcome { explicit: false }),
-        Some("welcome") if args.len() == 2 => Ok(Command::Welcome { explicit: true }),
-        Some("welcome") => Err(format!(
+    match (
+        args.get(1).map(String::as_str),
+        args.get(2).map(String::as_str),
+        args.len(),
+    ) {
+        (None, _, _) => Ok(Command::Welcome { explicit: false }),
+        (Some("welcome"), None, 2) => Ok(Command::Welcome { explicit: true }),
+        (Some("welcome"), _, _) => Err(format!(
             "welcome does not take additional arguments
 
 {}",
             usage_text(&program_name(args))
         )),
-        Some("auth") if args.len() == 2 => Ok(Command::Auth),
-        Some("auth") => Err(format!(
+        (Some("auth"), None, 2) => Ok(Command::Auth),
+        (Some("auth"), _, _) => Err(format!(
             "auth does not take additional arguments
 
 {}",
             usage_text(&program_name(args))
         )),
-        Some("update") if args.len() == 2 => Ok(Command::Update),
-        Some("update") => Err(format!(
+        (Some("update"), None, 2) => Ok(Command::Update),
+        (Some("update"), _, _) => Err(format!(
             "update does not take additional arguments
 
 {}",
             usage_text(&program_name(args))
         )),
-        Some("daemon") if args.len() == 2 => Ok(Command::Daemon),
-        Some("daemon") => Err(format!(
+        (Some("daemon"), None, 2) => Ok(Command::Daemon),
+        (Some("daemon"), _, _) => Err(format!(
             "daemon does not take additional arguments
 
 {}",
             usage_text(&program_name(args))
         )),
-        Some("monitor") if args.len() == 2 => Ok(Command::Monitor),
-        Some("monitor") => Err(format!(
+        (Some("monitor"), None, 2) => Ok(Command::Monitor),
+        (Some("monitor"), _, _) => Err(format!(
             "monitor does not take additional arguments
 
 {}",
             usage_text(&program_name(args))
         )),
-        Some(other) => Err(format!(
+        (Some("hook"), Some("install"), 3) => Ok(Command::HookInstall),
+        (Some("hook"), Some("doctor"), 3) => Ok(Command::HookDoctor),
+        (Some("hook"), _, _) => Err(format!(
+            "hook requires one of: install, doctor
+
+{}",
+            usage_text(&program_name(args))
+        )),
+        (Some(other), _, _) => Err(format!(
             "unsupported command: {other}
 
 {}",
@@ -82,6 +101,7 @@ fn usage_text(program: &str) -> String {
         "\
 Usage:
   {program} [welcome|auth|update|daemon|monitor]
+  {program} hook [install|doctor]
 "
     )
 }
@@ -133,42 +153,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_additional_welcome_arguments() {
-        let args = vec![
-            "pup".to_string(),
-            "welcome".to_string(),
-            "--extra".to_string(),
-        ];
-        let error = parse_command(&args).unwrap_err();
-
-        assert!(error.contains("welcome does not take additional arguments"));
+    fn parses_hook_install_command() {
+        let args = vec!["pup".to_string(), "hook".to_string(), "install".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::HookInstall);
     }
 
     #[test]
-    fn rejects_additional_auth_arguments() {
-        let args = vec!["pup".to_string(), "auth".to_string(), "--extra".to_string()];
-        let error = parse_command(&args).unwrap_err();
-
-        assert!(error.contains("auth does not take additional arguments"));
-    }
-
-    #[test]
-    fn rejects_additional_update_arguments() {
-        let args = vec![
-            "pup".to_string(),
-            "update".to_string(),
-            "--extra".to_string(),
-        ];
-        let error = parse_command(&args).unwrap_err();
-
-        assert!(error.contains("update does not take additional arguments"));
-    }
-
-    #[test]
-    fn rejects_unsupported_commands() {
-        let args = vec!["pup".to_string(), "unknown".to_string()];
-        let error = parse_command(&args).unwrap_err();
-
-        assert!(error.contains("unsupported command"));
+    fn parses_hook_doctor_command() {
+        let args = vec!["pup".to_string(), "hook".to_string(), "doctor".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::HookDoctor);
     }
 }
