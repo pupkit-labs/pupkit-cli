@@ -1,4 +1,5 @@
 mod auth;
+mod daemon;
 mod update;
 mod welcome;
 
@@ -7,6 +8,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         Command::Welcome { explicit } => welcome::execute(explicit),
         Command::Auth => auth::execute(),
         Command::Update => update::execute(),
+        Command::Daemon => daemon::execute(),
     }
 }
 
@@ -15,6 +17,7 @@ enum Command {
     Welcome { explicit: bool },
     Auth,
     Update,
+    Daemon,
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -35,6 +38,11 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
             "update does not take additional arguments\n\n{}",
             usage_text(&program_name(args))
         )),
+        Some("daemon") if args.len() == 2 => Ok(Command::Daemon),
+        Some("daemon") => Err(format!(
+            "daemon does not take additional arguments\n\n{}",
+            usage_text(&program_name(args))
+        )),
         Some(other) => Err(format!(
             "unsupported command: {other}\n\n{}",
             usage_text(&program_name(args))
@@ -53,7 +61,7 @@ fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [welcome|auth|update]
+  {program} [welcome|auth|update|daemon]
 "
     )
 }
@@ -90,6 +98,12 @@ mod tests {
     fn parses_update_command() {
         let args = vec!["pup".to_string(), "update".to_string()];
         assert_eq!(parse_command(&args).unwrap(), Command::Update);
+    }
+
+    #[test]
+    fn parses_daemon_command() {
+        let args = vec!["pup".to_string(), "daemon".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::Daemon);
     }
 
     #[test]

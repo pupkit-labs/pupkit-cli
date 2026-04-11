@@ -1,6 +1,8 @@
 pub mod collectors;
 pub mod commands;
+pub mod daemon;
 pub mod model;
+pub mod protocol;
 pub mod render;
 pub mod shell;
 
