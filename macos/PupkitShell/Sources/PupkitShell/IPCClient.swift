@@ -71,7 +71,7 @@ actor IPCClient {
         }
         withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
             ptr.initialize(to: 0)
-            socketPath.withCString { cString in
+            _ = socketPath.withCString { cString in
                 strncpy(ptr, cString, maxPathLength - 1)
             }
         }
