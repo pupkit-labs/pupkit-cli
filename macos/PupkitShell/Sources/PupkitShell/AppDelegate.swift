@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notchController.apply(snapshot: snapshot)
         } catch {
             statusItemController.apply(error: error.localizedDescription)
+            notchController.apply(snapshot: nil)
         }
     }
 }

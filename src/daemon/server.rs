@@ -101,6 +101,12 @@ impl DaemonServer {
                 .map_err(|error| format!("failed to create socket dir: {error}"))?;
         }
         if socket_path.exists() {
+            if UnixStream::connect(socket_path).is_ok() {
+                return Err(format!(
+                    "refusing to start: daemon socket already active at {}",
+                    socket_path.display()
+                ));
+            }
             let _ = fs::remove_file(socket_path);
         }
 
