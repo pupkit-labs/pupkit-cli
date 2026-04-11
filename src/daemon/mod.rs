@@ -4,8 +4,10 @@ mod pending;
 mod persistence;
 mod priority;
 mod registry;
+mod server;
 
 pub use app::PupkitDaemon;
 pub use config::DaemonConfig;
 pub use priority::select_top_session;
 pub use registry::SessionRegistry;
+pub use server::DaemonServer;
