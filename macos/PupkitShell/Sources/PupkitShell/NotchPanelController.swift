@@ -20,7 +20,7 @@ final class NotchPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSHostingView(rootView: NotchPanelView(snapshot: nil))
+        panel.contentView = NSHostingView(rootView: NotchPanelView(snapshot: nil, onApprove: nil, onDeny: nil, onAnswer: nil))
         position(panel: panel)
         self.panel = panel
     }
@@ -28,7 +28,12 @@ final class NotchPanelController {
     func apply(snapshot: UiStateSnapshot?) {
         latestSnapshot = snapshot
         if let hostingView = panel?.contentView as? NSHostingView<NotchPanelView> {
-            hostingView.rootView = NotchPanelView(snapshot: snapshot)
+            hostingView.rootView = NotchPanelView(
+                snapshot: snapshot,
+                onApprove: { [weak self] requestId in await self?.approve(requestId: requestId) },
+                onDeny: { [weak self] requestId in await self?.deny(requestId: requestId) },
+                onAnswer: { [weak self] requestId, option in await self?.answer(requestId: requestId, option: option) }
+            )
         }
         if snapshot?.top_attention != nil {
             panel?.orderFrontRegardless()
@@ -47,6 +52,36 @@ final class NotchPanelController {
         }
     }
 
+    private func approve(requestId: String) async {
+        guard let ipcClient else { return }
+        do {
+            let snapshot = try await ipcClient.approve(requestId: requestId)
+            apply(snapshot: snapshot)
+        } catch {
+            apply(snapshot: nil)
+        }
+    }
+
+    private func deny(requestId: String) async {
+        guard let ipcClient else { return }
+        do {
+            let snapshot = try await ipcClient.deny(requestId: requestId)
+            apply(snapshot: snapshot)
+        } catch {
+            apply(snapshot: nil)
+        }
+    }
+
+    private func answer(requestId: String, option: String) async {
+        guard let ipcClient else { return }
+        do {
+            let snapshot = try await ipcClient.answerOption(requestId: requestId, optionId: option)
+            apply(snapshot: snapshot)
+        } catch {
+            apply(snapshot: nil)
+        }
+    }
+
     private func position(panel: NSPanel) {
         guard let screen = NSScreen.main else { return }
         let frame = screen.visibleFrame
@@ -58,6 +93,9 @@ final class NotchPanelController {
 
 private struct NotchPanelView: View {
     let snapshot: UiStateSnapshot?
+    let onApprove: ((String) async -> Void)?
+    let onDeny: ((String) async -> Void)?
+    let onAnswer: ((String, String) async -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -66,14 +104,36 @@ private struct NotchPanelView: View {
             Text(snapshot?.top_attention?.message ?? "No pending attention")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            if let options = snapshot?.top_attention?.options, !options.isEmpty {
-                HStack {
-                    ForEach(options, id: \.self) { option in
-                        Text(option)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Color.blue.opacity(0.15))
-                            .clipShape(Capsule())
+            if let attention = snapshot?.top_attention {
+                switch attention.status {
+                case .waitingApproval:
+                    HStack {
+                        Button("Approve") {
+                            Task { await onApprove?(attention.request_id) }
+                        }
+                        Button("Deny") {
+                            Task { await onDeny?(attention.request_id) }
+                        }
+                    }
+                case .waitingQuestion:
+                    HStack {
+                        ForEach(attention.options, id: \.self) { option in
+                            Button(option) {
+                                Task { await onAnswer?(attention.request_id, option) }
+                            }
+                        }
+                    }
+                default:
+                    if !attention.options.isEmpty {
+                        HStack {
+                            ForEach(attention.options, id: \.self) { option in
+                                Text(option)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(Color.blue.opacity(0.15))
+                                    .clipShape(Capsule())
+                            }
+                        }
                     }
                 }
             }

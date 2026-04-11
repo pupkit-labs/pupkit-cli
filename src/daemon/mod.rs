@@ -1,4 +1,5 @@
 mod app;
+pub mod client;
 mod config;
 mod pending;
 mod persistence;
