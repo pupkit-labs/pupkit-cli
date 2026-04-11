@@ -6,12 +6,11 @@ fn temp_config(name: &str) -> DaemonConfig {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!("pupkit-bridge-{name}-{ts}-{}", std::process::id()));
+        .as_millis() % 1_000_000;
+    let root = std::env::temp_dir().join(format!("pk-{name}-{ts}"));
     DaemonConfig {
-        socket_path: root.join("pupkitd.sock"),
-        state_path: root.join("daemon-state.json"),
+        socket_path: root.join("d.sock"),
+        state_path: root.join("state.json"),
     }
 }
 
