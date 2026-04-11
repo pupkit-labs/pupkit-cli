@@ -28,6 +28,7 @@ pub struct SessionListItem {
     pub title: String,
     pub status: SessionStatus,
     pub summary: Option<String>,
+    pub last_updated_at: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

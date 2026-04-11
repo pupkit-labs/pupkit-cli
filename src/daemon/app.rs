@@ -1,4 +1,5 @@
 use std::env;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::daemon::pending::{PendingRequest, PendingStore, PendingWaitHandle};
 use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
@@ -31,7 +32,9 @@ impl PupkitDaemon {
             pending: PendingStore::default(),
             completions: Vec::new(),
         };
-        let _ = daemon.restore_state();
+        if let Err(error) = daemon.restore_state() {
+            eprintln!("warning: {error}");
+        }
         daemon
     }
 
@@ -79,7 +82,11 @@ impl PupkitDaemon {
         if let Some(cwd) = event.cwd.clone() {
             snapshot.cwd = Some(cwd);
         }
-        snapshot.last_updated_at = event.occurred_at;
+        snapshot.last_updated_at = if event.occurred_at == 0 {
+            current_unix_timestamp()
+        } else {
+            event.occurred_at
+        };
         if let Some(summary) = event.summary.clone() {
             snapshot.last_summary = Some(summary);
         }
@@ -103,7 +110,7 @@ impl PupkitDaemon {
                         request_id.clone(),
                         event.session_id.clone(),
                         AttentionKind::Approval,
-                        event.occurred_at,
+                        snapshot.last_updated_at,
                     );
                     self.pending.insert(request);
                     snapshot.status = SessionStatus::WaitingApproval;
@@ -128,7 +135,7 @@ impl PupkitDaemon {
                         request_id.clone(),
                         event.session_id.clone(),
                         AttentionKind::Question,
-                        event.occurred_at,
+                        snapshot.last_updated_at,
                     );
                     self.pending.insert(request);
                     snapshot.status = SessionStatus::WaitingQuestion;
@@ -200,6 +207,7 @@ impl PupkitDaemon {
                 let mut updated = snapshot.clone();
                 updated.status = next_status.clone();
                 updated.attention = None;
+                updated.last_updated_at = current_unix_timestamp();
                 self.registry.upsert(updated);
                 break;
             }
@@ -264,9 +272,16 @@ impl PupkitDaemon {
                 title: snapshot.title.clone(),
                 status: snapshot.status.clone(),
                 summary: snapshot.last_summary.clone(),
+                last_updated_at: snapshot.last_updated_at,
             })
             .collect();
-        sessions.sort_by_key(|item| (item.status.priority_rank(), item.title.clone()));
+        sessions.sort_by_key(|item| {
+            (
+                item.status.priority_rank(),
+                std::cmp::Reverse(item.last_updated_at),
+                item.title.clone(),
+            )
+        });
 
         let top_attention = select_top_session(self.registry.all()).and_then(|snapshot| {
             let attention = snapshot.attention.as_ref()?;
@@ -318,10 +333,28 @@ top attention: {}",
 
     fn restore_state(&mut self) -> Result<(), String> {
         let state = load_state(&self.config.state_path)?;
-        self.registry.replace_all(state.sessions);
+        let sanitized_sessions = state
+            .sessions
+            .into_iter()
+            .map(|mut snapshot| {
+                if snapshot.status.requires_attention() || snapshot.attention.is_some() {
+                    snapshot.status = SessionStatus::Stale;
+                    snapshot.attention = None;
+                }
+                snapshot
+            })
+            .collect();
+        self.registry.replace_all(sanitized_sessions);
         self.completions = state.recent_completions;
         Ok(())
     }
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -413,5 +446,35 @@ mod tests {
             .unwrap();
         assert!(decision.is_some());
         assert!(daemon.state_snapshot().top_attention.is_none());
+    }
+
+    #[test]
+    fn restore_state_sanitizes_unrecoverable_attention() {
+        let config = temp_config("restore");
+        let mut daemon = PupkitDaemon::for_config(config.clone());
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::ClaudeCode,
+                    SessionId::new("session-approval"),
+                    SessionEventKind::ApprovalRequested,
+                )
+                .with_title("approval")
+                .with_payload(SessionEventPayload::ApprovalRequest {
+                    request_id: RequestId::new("req-restore"),
+                    tool_name: "Edit".to_string(),
+                    tool_input_summary: "modify src/main.rs".to_string(),
+                }),
+            )
+            .unwrap();
+        daemon.persist_state().unwrap();
+
+        let restored = PupkitDaemon::for_config(config);
+        let snapshot = restored.state_snapshot();
+        assert!(snapshot.top_attention.is_none());
+        assert_eq!(
+            snapshot.sessions[0].status,
+            crate::protocol::SessionStatus::Stale
+        );
     }
 }

@@ -25,13 +25,15 @@ final class NotchPanelController {
         self.panel = panel
     }
 
-    func apply(snapshot: UiStateSnapshot) {
+    func apply(snapshot: UiStateSnapshot?) {
         latestSnapshot = snapshot
         if let hostingView = panel?.contentView as? NSHostingView<NotchPanelView> {
             hostingView.rootView = NotchPanelView(snapshot: snapshot)
         }
-        if snapshot.top_attention != nil {
+        if snapshot?.top_attention != nil {
             panel?.orderFrontRegardless()
+        } else {
+            panel?.orderOut(nil)
         }
     }
 
