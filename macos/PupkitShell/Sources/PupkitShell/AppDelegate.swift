@@ -10,7 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItemController.start(ipcClient: ipcClient, notchController: notchController)
-        notchController.configure(ipcClient: ipcClient)
+        notchController.configure(ipcClient: ipcClient) { [weak self] updatedState in
+            self?.statusItemController.apply(snapshot: updatedState)
+        }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.refreshState()

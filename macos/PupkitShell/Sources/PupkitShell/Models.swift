@@ -26,7 +26,6 @@ struct SessionListItem: Decodable {
     let title: String
     let status: ShellStatus
     let summary: String?
-    let last_updated_at: UInt64
 }
 
 struct CompletionItem: Decodable {
@@ -43,102 +42,43 @@ struct UiStateSnapshot: Decodable {
     let recent_completions: [CompletionItem]
 }
 
-struct UiActionResultPayload: Decodable {
-    let decision: HookDecisionPayload?
-    let state: UiStateSnapshot
-}
+// MARK: - UiAction (Encodable, sent to daemon)
 
-enum HookDecisionPayload: Decodable {
-    case approval(requestId: String)
-    case questionAnswer(requestId: String)
-    case cancelled(requestId: String)
-    case timeout(requestId: String)
-    case ack
+enum UiAction: Encodable {
+    case approve(requestId: String, always: Bool)
+    case deny(requestId: String)
+    case answerOption(requestId: String, optionId: String)
+    case answerText(requestId: String, text: String)
+    case dismissCompletion(sessionId: String)
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let raw = try? container.decode(String.self), raw == "Ack" {
-            self = .ack
-            return
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .approve(let requestId, let always):
+            try container.encode(["Approve": ApprovePayload(request_id: requestId, always: always)])
+        case .deny(let requestId):
+            try container.encode(["Deny": DenyPayload(request_id: requestId)])
+        case .answerOption(let requestId, let optionId):
+            try container.encode(["AnswerOption": AnswerOptionPayload(request_id: requestId, option_id: optionId)])
+        case .answerText(let requestId, let text):
+            try container.encode(["AnswerText": AnswerTextPayload(request_id: requestId, text: text)])
+        case .dismissCompletion(let sessionId):
+            try container.encode(["DismissCompletion": DismissPayload(session_id: sessionId)])
         }
-        if let object = try? container.decode([String: ApprovalPayload].self),
-           let payload = object["Approval"] {
-            self = .approval(requestId: payload.request_id)
-            return
-        }
-        if let object = try? container.decode([String: AnswerPayload].self),
-           let payload = object["QuestionAnswer"] {
-            self = .questionAnswer(requestId: payload.request_id)
-            return
-        }
-        if let object = try? container.decode([String: RequestOnlyPayload].self),
-           let payload = object["Cancelled"] {
-            self = .cancelled(requestId: payload.request_id)
-            return
-        }
-        if let object = try? container.decode([String: RequestOnlyPayload].self),
-           let payload = object["Timeout"] {
-            self = .timeout(requestId: payload.request_id)
-            return
-        }
-        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported hook decision payload")
     }
 }
 
-enum ServerResponse: Decodable {
-    case ack
-    case stateSnapshot(UiStateSnapshot)
-    case uiActionResult(UiActionResultPayload)
-    case error(String)
+private struct ApprovePayload: Encodable { let request_id: String; let always: Bool }
+private struct DenyPayload: Encodable { let request_id: String }
+private struct AnswerOptionPayload: Encodable { let request_id: String; let option_id: String }
+private struct AnswerTextPayload: Encodable { let request_id: String; let text: String }
+private struct DismissPayload: Encodable { let session_id: String }
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let raw = try? container.decode(String.self), raw == "Ack" {
-            self = .ack
-            return
-        }
+// MARK: - ClientRequest (Encodable, sent to daemon)
 
-        if let object = try? container.decode([String: UiStateSnapshot].self),
-           let snapshot = object["StateSnapshot"] {
-            self = .stateSnapshot(snapshot)
-            return
-        }
-
-        if let object = try? container.decode([String: UiActionResultPayload].self),
-           let payload = object["UiActionResult"] {
-            self = .uiActionResult(payload)
-            return
-        }
-
-        if let object = try? container.decode([String: ErrorPayload].self),
-           let payload = object["Error"] {
-            self = .error(payload.message)
-            return
-        }
-
-        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported server response")
-    }
-}
-
-private struct ErrorPayload: Decodable {
-    let message: String
-}
-
-private struct RequestOnlyPayload: Decodable {
-    let request_id: String
-}
-
-private struct ApprovalPayload: Decodable {
-    let request_id: String
-}
-
-private struct AnswerPayload: Decodable {
-    let request_id: String
-}
-
-enum ClientRequestEnvelope: Encodable {
+enum ClientRequest: Encodable {
     case stateSnapshot
-    case ui(UiActionEnvelope)
+    case ui(UiAction)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
@@ -151,32 +91,54 @@ enum ClientRequestEnvelope: Encodable {
     }
 }
 
-enum UiActionEnvelope: Encodable {
-    case approve(requestId: String, always: Bool)
-    case deny(requestId: String)
-    case answerOption(requestId: String, optionId: String)
+// MARK: - ServerResponse (Decodable, received from daemon)
 
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .approve(let requestId, let always):
-            try container.encode(["Approve": ["request_id": requestId, "always": always] as [String: AnyEncodable]])
-        case .deny(let requestId):
-            try container.encode(["Deny": ["request_id": requestId] as [String: AnyEncodable]])
-        case .answerOption(let requestId, let optionId):
-            try container.encode(["AnswerOption": ["request_id": requestId, "option_id": optionId] as [String: AnyEncodable]])
+enum ServerResponse: Decodable {
+    case ack
+    case stateSnapshot(UiStateSnapshot)
+    case uiActionResult(decision: HookDecisionPayload?, state: UiStateSnapshot)
+    case error(String)
+
+    private enum CodingKeys: String, CodingKey {
+        case StateSnapshot
+        case Error
+        case UiActionResult
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let raw = try? container.decode(String.self), raw == "Ack" {
+            self = .ack
+            return
         }
+
+        if let object = try? decoder.singleValueContainer().decode([String: UiStateSnapshot].self),
+           let snapshot = object["StateSnapshot"] {
+            self = .stateSnapshot(snapshot)
+            return
+        }
+
+        if let object = try? decoder.singleValueContainer().decode([String: UiActionResultPayload].self),
+           let result = object["UiActionResult"] {
+            self = .uiActionResult(decision: result.decision, state: result.state)
+            return
+        }
+
+        if let object = try? decoder.singleValueContainer().decode([String: ErrorPayload].self),
+           let payload = object["Error"] {
+            self = .error(payload.message)
+            return
+        }
+
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported server response")
     }
 }
 
-struct AnyEncodable: Encodable {
-    private let encodeImpl: (Encoder) throws -> Void
-
-    init<T: Encodable>(_ value: T) {
-        self.encodeImpl = value.encode
-    }
-
-    func encode(to encoder: Encoder) throws {
-        try encodeImpl(encoder)
-    }
+struct HookDecisionPayload: Decodable {}
+private struct UiActionResultPayload: Decodable {
+    let decision: HookDecisionPayload?
+    let state: UiStateSnapshot
+}
+private struct ErrorPayload: Decodable {
+    let message: String
 }

@@ -6,9 +6,11 @@ final class NotchPanelController {
     private var panel: NSPanel?
     private var latestSnapshot: UiStateSnapshot?
     private var ipcClient: IPCClient?
+    private var onStateUpdate: ((UiStateSnapshot) -> Void)?
 
-    func configure(ipcClient: IPCClient) {
+    func configure(ipcClient: IPCClient, onStateUpdate: @escaping (UiStateSnapshot) -> Void) {
         self.ipcClient = ipcClient
+        self.onStateUpdate = onStateUpdate
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -20,7 +22,7 @@ final class NotchPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSHostingView(rootView: NotchPanelView(snapshot: nil, onApprove: nil, onDeny: nil, onAnswer: nil))
+        panel.contentView = NSHostingView(rootView: NotchPanelView(snapshot: nil, onAction: { _ in }))
         position(panel: panel)
         self.panel = panel
     }
@@ -28,12 +30,9 @@ final class NotchPanelController {
     func apply(snapshot: UiStateSnapshot?) {
         latestSnapshot = snapshot
         if let hostingView = panel?.contentView as? NSHostingView<NotchPanelView> {
-            hostingView.rootView = NotchPanelView(
-                snapshot: snapshot,
-                onApprove: { [weak self] requestId in await self?.approve(requestId: requestId) },
-                onDeny: { [weak self] requestId in await self?.deny(requestId: requestId) },
-                onAnswer: { [weak self] requestId, option in await self?.answer(requestId: requestId, option: option) }
-            )
+            hostingView.rootView = NotchPanelView(snapshot: snapshot, onAction: { [weak self] action in
+                self?.handleAction(action)
+            })
         }
         if snapshot?.top_attention != nil {
             panel?.orderFrontRegardless()
@@ -52,36 +51,6 @@ final class NotchPanelController {
         }
     }
 
-    private func approve(requestId: String) async {
-        guard let ipcClient else { return }
-        do {
-            let snapshot = try await ipcClient.approve(requestId: requestId)
-            apply(snapshot: snapshot)
-        } catch {
-            apply(snapshot: nil)
-        }
-    }
-
-    private func deny(requestId: String) async {
-        guard let ipcClient else { return }
-        do {
-            let snapshot = try await ipcClient.deny(requestId: requestId)
-            apply(snapshot: snapshot)
-        } catch {
-            apply(snapshot: nil)
-        }
-    }
-
-    private func answer(requestId: String, option: String) async {
-        guard let ipcClient else { return }
-        do {
-            let snapshot = try await ipcClient.answerOption(requestId: requestId, optionId: option)
-            apply(snapshot: snapshot)
-        } catch {
-            apply(snapshot: nil)
-        }
-    }
-
     private func position(panel: NSPanel) {
         guard let screen = NSScreen.main else { return }
         let frame = screen.visibleFrame
@@ -89,13 +58,26 @@ final class NotchPanelController {
         let y = frame.maxY - panel.frame.height - 6
         panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
+
+    private func handleAction(_ action: UiAction) {
+        guard let ipcClient else { return }
+        Task {
+            do {
+                let updatedState = try await ipcClient.sendUiAction(action)
+                await MainActor.run {
+                    self.apply(snapshot: updatedState)
+                    self.onStateUpdate?(updatedState)
+                }
+            } catch {
+                // Action failed — next poll will refresh state
+            }
+        }
+    }
 }
 
 private struct NotchPanelView: View {
     let snapshot: UiStateSnapshot?
-    let onApprove: ((String) async -> Void)?
-    let onDeny: ((String) async -> Void)?
-    let onAnswer: ((String, String) async -> Void)?
+    let onAction: (UiAction) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -105,37 +87,7 @@ private struct NotchPanelView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if let attention = snapshot?.top_attention {
-                switch attention.status {
-                case .waitingApproval:
-                    HStack {
-                        Button("Approve") {
-                            Task { await onApprove?(attention.request_id) }
-                        }
-                        Button("Deny") {
-                            Task { await onDeny?(attention.request_id) }
-                        }
-                    }
-                case .waitingQuestion:
-                    HStack {
-                        ForEach(attention.options, id: \.self) { option in
-                            Button(option) {
-                                Task { await onAnswer?(attention.request_id, option) }
-                            }
-                        }
-                    }
-                default:
-                    if !attention.options.isEmpty {
-                        HStack {
-                            ForEach(attention.options, id: \.self) { option in
-                                Text(option)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(Color.blue.opacity(0.15))
-                                    .clipShape(Capsule())
-                            }
-                        }
-                    }
-                }
+                actionButtons(for: attention)
             }
         }
         .padding(16)
@@ -143,5 +95,65 @@ private struct NotchPanelView: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(8)
+    }
+
+    @ViewBuilder
+    private func actionButtons(for attention: AttentionCard) -> some View {
+        switch attention.status {
+        case .waitingApproval:
+            HStack(spacing: 8) {
+                Button {
+                    onAction(.approve(requestId: attention.request_id, always: false))
+                } label: {
+                    Text("Allow")
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.green, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onAction(.approve(requestId: attention.request_id, always: true))
+                } label: {
+                    Text("Always Allow")
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.green.opacity(0.6), in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onAction(.deny(requestId: attention.request_id))
+                } label: {
+                    Text("Deny")
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Color.red, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+        case .waitingQuestion:
+            HStack(spacing: 6) {
+                ForEach(attention.options, id: \.self) { option in
+                    Button {
+                        onAction(.answerOption(requestId: attention.request_id, optionId: option))
+                    } label: {
+                        Text(option)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.blue, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+        default:
+            EmptyView()
+        }
     }
 }

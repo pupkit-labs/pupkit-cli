@@ -5,35 +5,32 @@ final class StatusItemController: NSObject {
     private var statusItem: NSStatusItem?
     private let menu = NSMenu()
     private weak var notchController: NotchPanelController?
-    private var latestSnapshot: UiStateSnapshot?
     private var ipcClient: IPCClient?
-    private var errorMessage: String?
+    private var latestSnapshot: UiStateSnapshot?
 
     func start(ipcClient: IPCClient, notchController: NotchPanelController) {
-        self.ipcClient = ipcClient
         self.notchController = notchController
+        self.ipcClient = ipcClient
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "🐶 Pupkit"
         item.button?.toolTip = "Pupkit Shell"
         item.menu = menu
         statusItem = item
-        rebuildMenu()
+        rebuildMenu(errorMessage: nil)
     }
 
     func apply(snapshot: UiStateSnapshot) {
         latestSnapshot = snapshot
-        errorMessage = nil
         let attentionCount = snapshot.top_attention == nil ? 0 : 1
         statusItem?.button?.title = attentionCount > 0 ? "🐶(\(attentionCount))" : "🐶"
-        rebuildMenu()
+        rebuildMenu(errorMessage: nil)
     }
 
     func apply(error: String) {
-        errorMessage = error
-        rebuildMenu()
+        rebuildMenu(errorMessage: error)
     }
 
-    private func rebuildMenu() {
+    private func rebuildMenu(errorMessage: String?) {
         menu.removeAllItems()
 
         if let errorMessage {
@@ -44,34 +41,27 @@ final class StatusItemController: NSObject {
         }
 
         if let attention = latestSnapshot?.top_attention {
-            let attentionItem = NSMenuItem(title: "Needs attention: \(attention.title)", action: nil, keyEquivalent: "")
+            let attentionItem = NSMenuItem(title: "⚠ \(attention.title)", action: nil, keyEquivalent: "")
             attentionItem.isEnabled = false
             menu.addItem(attentionItem)
-            let messageItem = NSMenuItem(title: attention.message, action: nil, keyEquivalent: "")
-            messageItem.isEnabled = false
-            menu.addItem(messageItem)
+            menu.addItem(NSMenuItem(title: "  \(attention.message)", action: nil, keyEquivalent: ""))
 
-            switch attention.status {
-            case .waitingApproval:
-                let approve = NSMenuItem(title: "Approve", action: #selector(approveTopAttention), keyEquivalent: "")
-                approve.target = self
-                approve.representedObject = attention.request_id
-                menu.addItem(approve)
-
-                let deny = NSMenuItem(title: "Deny", action: #selector(denyTopAttention), keyEquivalent: "")
-                deny.target = self
-                deny.representedObject = attention.request_id
-                menu.addItem(deny)
-            case .waitingQuestion:
+            if attention.status == .waitingApproval {
+                let approveItem = NSMenuItem(title: "  ✅ Allow", action: #selector(approveAttention), keyEquivalent: "")
+                approveItem.target = self
+                menu.addItem(approveItem)
+                let denyItem = NSMenuItem(title: "  ❌ Deny", action: #selector(denyAttention), keyEquivalent: "")
+                denyItem.target = self
+                menu.addItem(denyItem)
+            } else if attention.status == .waitingQuestion {
                 for option in attention.options {
-                    let optionItem = NSMenuItem(title: option, action: #selector(answerTopAttentionOption(_:)), keyEquivalent: "")
-                    optionItem.target = self
-                    optionItem.representedObject = [attention.request_id, option]
-                    menu.addItem(optionItem)
+                    let optItem = NSMenuItem(title: "  → \(option)", action: #selector(answerOption(_:)), keyEquivalent: "")
+                    optItem.target = self
+                    optItem.representedObject = AnswerContext(requestId: attention.request_id, optionId: option)
+                    menu.addItem(optItem)
                 }
-            default:
-                break
             }
+
             menu.addItem(.separator())
         }
 
@@ -97,44 +87,32 @@ final class StatusItemController: NSObject {
         menu.addItem(quit)
     }
 
-    @objc private func approveTopAttention(_ sender: NSMenuItem) {
-        guard let requestId = sender.representedObject as? String else { return }
-        Task { @MainActor in
-            guard let ipcClient else { return }
-            do {
-                let snapshot = try await ipcClient.approve(requestId: requestId)
-                apply(snapshot: snapshot)
-                notchController?.apply(snapshot: snapshot)
-            } catch {
-                apply(error: error.localizedDescription)
-            }
-        }
+    @objc private func approveAttention() {
+        guard let requestId = latestSnapshot?.top_attention?.request_id else { return }
+        sendAction(.approve(requestId: requestId, always: false))
     }
 
-    @objc private func denyTopAttention(_ sender: NSMenuItem) {
-        guard let requestId = sender.representedObject as? String else { return }
-        Task { @MainActor in
-            guard let ipcClient else { return }
-            do {
-                let snapshot = try await ipcClient.deny(requestId: requestId)
-                apply(snapshot: snapshot)
-                notchController?.apply(snapshot: snapshot)
-            } catch {
-                apply(error: error.localizedDescription)
-            }
-        }
+    @objc private func denyAttention() {
+        guard let requestId = latestSnapshot?.top_attention?.request_id else { return }
+        sendAction(.deny(requestId: requestId))
     }
 
-    @objc private func answerTopAttentionOption(_ sender: NSMenuItem) {
-        guard let payload = sender.representedObject as? [String], payload.count == 2 else { return }
-        Task { @MainActor in
-            guard let ipcClient else { return }
+    @objc private func answerOption(_ sender: NSMenuItem) {
+        guard let ctx = sender.representedObject as? AnswerContext else { return }
+        sendAction(.answerOption(requestId: ctx.requestId, optionId: ctx.optionId))
+    }
+
+    private func sendAction(_ action: UiAction) {
+        guard let ipcClient else { return }
+        Task {
             do {
-                let snapshot = try await ipcClient.answerOption(requestId: payload[0], optionId: payload[1])
-                apply(snapshot: snapshot)
-                notchController?.apply(snapshot: snapshot)
+                let updatedState = try await ipcClient.sendUiAction(action)
+                await MainActor.run {
+                    self.apply(snapshot: updatedState)
+                    self.notchController?.apply(snapshot: updatedState)
+                }
             } catch {
-                apply(error: error.localizedDescription)
+                // Action failed — next poll will refresh
             }
         }
     }
@@ -145,5 +123,14 @@ final class StatusItemController: NSObject {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+private class AnswerContext: NSObject {
+    let requestId: String
+    let optionId: String
+    init(requestId: String, optionId: String) {
+        self.requestId = requestId
+        self.optionId = optionId
     }
 }

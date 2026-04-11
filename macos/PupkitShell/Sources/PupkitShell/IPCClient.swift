@@ -9,12 +9,14 @@ actor IPCClient {
     }
 
     func fetchStateSnapshot() async throws -> UiStateSnapshot {
-        let response = try send(request: .stateSnapshot)
+        let payload = try JSONEncoder().encode(ClientRequest.stateSnapshot)
+        let responseData = try sendRaw(jsonData: payload)
+        let response = try JSONDecoder().decode(ServerResponse.self, from: responseData)
         switch response {
         case .stateSnapshot(let snapshot):
             return snapshot
-        case .uiActionResult(let payload):
-            return payload.state
+        case .uiActionResult(_, let state):
+            return state
         case .ack:
             throw NSError(domain: "PupkitShell", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unexpected ACK response"])
         case .error(let message):
@@ -22,38 +24,21 @@ actor IPCClient {
         }
     }
 
-    func approve(requestId: String, always: Bool = false) async throws -> UiStateSnapshot {
-        let response = try send(request: .ui(.approve(requestId: requestId, always: always)))
-        return try unwrapUiState(from: response)
-    }
-
-    func deny(requestId: String) async throws -> UiStateSnapshot {
-        let response = try send(request: .ui(.deny(requestId: requestId)))
-        return try unwrapUiState(from: response)
-    }
-
-    func answerOption(requestId: String, optionId: String) async throws -> UiStateSnapshot {
-        let response = try send(request: .ui(.answerOption(requestId: requestId, optionId: optionId)))
-        return try unwrapUiState(from: response)
-    }
-
-    private func unwrapUiState(from response: ServerResponse) throws -> UiStateSnapshot {
+    func sendUiAction(_ action: UiAction) async throws -> UiStateSnapshot {
+        let request = ClientRequest.ui(action)
+        let payload = try JSONEncoder().encode(request)
+        let responseData = try sendRaw(jsonData: payload)
+        let response = try JSONDecoder().decode(ServerResponse.self, from: responseData)
         switch response {
-        case .uiActionResult(let payload):
-            return payload.state
+        case .uiActionResult(_, let state):
+            return state
         case .stateSnapshot(let snapshot):
             return snapshot
         case .ack:
-            throw NSError(domain: "PupkitShell", code: 6, userInfo: [NSLocalizedDescriptionKey: "Unexpected ACK response"])
+            throw NSError(domain: "PupkitShell", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unexpected ACK for UI action"])
         case .error(let message):
-            throw NSError(domain: "PupkitShell", code: 7, userInfo: [NSLocalizedDescriptionKey: message])
+            throw NSError(domain: "PupkitShell", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
         }
-    }
-
-    private func send(request: ClientRequestEnvelope) throws -> ServerResponse {
-        let payload = try JSONEncoder().encode(request)
-        let responseData = try sendRaw(jsonData: payload)
-        return try JSONDecoder().decode(ServerResponse.self, from: responseData)
     }
 
     private func sendRaw(jsonData: Data) throws -> Data {
