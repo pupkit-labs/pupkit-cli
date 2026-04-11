@@ -10,7 +10,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PupkitShell",
-            path: "Sources/PupkitShell"
+            path: "Sources/PupkitShell",
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         )
     ]
 )
