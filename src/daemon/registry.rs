@@ -16,8 +16,23 @@ impl SessionRegistry {
         self.sessions.get(session_id)
     }
 
+    pub fn get_mut(&mut self, session_id: &SessionId) -> Option<&mut SessionSnapshot> {
+        self.sessions.get_mut(session_id)
+    }
+
     pub fn all(&self) -> Vec<&SessionSnapshot> {
         self.sessions.values().collect()
+    }
+
+    pub fn replace_all(&mut self, sessions: Vec<SessionSnapshot>) {
+        self.sessions = sessions
+            .into_iter()
+            .map(|snapshot| (snapshot.session_id.clone(), snapshot))
+            .collect();
+    }
+
+    pub fn snapshots(&self) -> Vec<SessionSnapshot> {
+        self.sessions.values().cloned().collect()
     }
 }
 

@@ -1,5 +1,6 @@
 mod auth;
 mod daemon;
+mod monitor;
 mod update;
 mod welcome;
 
@@ -9,6 +10,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         Command::Auth => auth::execute(),
         Command::Update => update::execute(),
         Command::Daemon => daemon::execute(),
+        Command::Monitor => monitor::execute(),
     }
 }
 
@@ -18,6 +20,7 @@ enum Command {
     Auth,
     Update,
     Daemon,
+    Monitor,
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -25,26 +28,43 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         None => Ok(Command::Welcome { explicit: false }),
         Some("welcome") if args.len() == 2 => Ok(Command::Welcome { explicit: true }),
         Some("welcome") => Err(format!(
-            "welcome does not take additional arguments\n\n{}",
+            "welcome does not take additional arguments
+
+{}",
             usage_text(&program_name(args))
         )),
         Some("auth") if args.len() == 2 => Ok(Command::Auth),
         Some("auth") => Err(format!(
-            "auth does not take additional arguments\n\n{}",
+            "auth does not take additional arguments
+
+{}",
             usage_text(&program_name(args))
         )),
         Some("update") if args.len() == 2 => Ok(Command::Update),
         Some("update") => Err(format!(
-            "update does not take additional arguments\n\n{}",
+            "update does not take additional arguments
+
+{}",
             usage_text(&program_name(args))
         )),
         Some("daemon") if args.len() == 2 => Ok(Command::Daemon),
         Some("daemon") => Err(format!(
-            "daemon does not take additional arguments\n\n{}",
+            "daemon does not take additional arguments
+
+{}",
+            usage_text(&program_name(args))
+        )),
+        Some("monitor") if args.len() == 2 => Ok(Command::Monitor),
+        Some("monitor") => Err(format!(
+            "monitor does not take additional arguments
+
+{}",
             usage_text(&program_name(args))
         )),
         Some(other) => Err(format!(
-            "unsupported command: {other}\n\n{}",
+            "unsupported command: {other}
+
+{}",
             usage_text(&program_name(args))
         )),
     }
@@ -61,7 +81,7 @@ fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [welcome|auth|update|daemon]
+  {program} [welcome|auth|update|daemon|monitor]
 "
     )
 }
@@ -104,6 +124,12 @@ mod tests {
     fn parses_daemon_command() {
         let args = vec!["pup".to_string(), "daemon".to_string()];
         assert_eq!(parse_command(&args).unwrap(), Command::Daemon);
+    }
+
+    #[test]
+    fn parses_monitor_command() {
+        let args = vec!["pup".to_string(), "monitor".to_string()];
+        assert_eq!(parse_command(&args).unwrap(), Command::Monitor);
     }
 
     #[test]

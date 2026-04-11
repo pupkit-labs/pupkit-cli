@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::RequestId;
 use crate::protocol::SessionId;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,11 +43,29 @@ impl SessionStatus {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AttentionKind {
+    Approval,
+    Question,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AttentionSnapshot {
+    pub request_id: RequestId,
+    pub kind: AttentionKind,
+    pub message: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub session_id: SessionId,
     pub source: SourceKind,
     pub title: String,
+    pub cwd: Option<String>,
     pub status: SessionStatus,
+    pub attention: Option<AttentionSnapshot>,
+    pub last_summary: Option<String>,
+    pub last_updated_at: u64,
 }
 
 impl SessionSnapshot {
@@ -60,7 +79,11 @@ impl SessionSnapshot {
             session_id,
             source,
             title,
+            cwd: None,
             status,
+            attention: None,
+            last_summary: None,
+            last_updated_at: 0,
         }
     }
 }
