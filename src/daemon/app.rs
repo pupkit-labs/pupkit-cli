@@ -1,5 +1,6 @@
 use std::env;
 
+use crate::daemon::pending::{PendingRequest, PendingStore, PendingWaitHandle};
 use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
 use crate::daemon::{DaemonConfig, SessionRegistry, select_top_session};
 use crate::protocol::{
@@ -8,9 +9,7 @@ use crate::protocol::{
     SessionSnapshot, SessionStatus, UiAction, UiStateSnapshot, UserAnswer,
 };
 
-use super::pending::{PendingRequest, PendingStore};
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PupkitDaemon {
     config: DaemonConfig,
     registry: SessionRegistry,
@@ -22,6 +21,10 @@ impl PupkitDaemon {
     pub fn bootstrap() -> Self {
         let home = env::var_os("HOME").map(Into::into);
         let config = DaemonConfig::default_for_home(home);
+        Self::for_config(config)
+    }
+
+    pub fn for_config(config: DaemonConfig) -> Self {
         let mut daemon = Self {
             config,
             registry: SessionRegistry::default(),
@@ -37,6 +40,23 @@ impl PupkitDaemon {
     }
 
     pub fn ingest_event(&mut self, event: SessionEvent) -> Result<(), String> {
+        let _ = self.ingest_event_internal(event, false)?;
+        Ok(())
+    }
+
+    pub fn ingest_blocking_event(
+        &mut self,
+        event: SessionEvent,
+    ) -> Result<PendingWaitHandle, String> {
+        self.ingest_event_internal(event, true)?
+            .ok_or_else(|| "blocking event did not produce a pending wait handle".to_string())
+    }
+
+    fn ingest_event_internal(
+        &mut self,
+        event: SessionEvent,
+        expect_blocking_waiter: bool,
+    ) -> Result<Option<PendingWaitHandle>, String> {
         let mut snapshot = self
             .registry
             .get(&event.session_id)
@@ -64,6 +84,8 @@ impl PupkitDaemon {
             snapshot.last_summary = Some(summary);
         }
 
+        let mut wait_handle = None;
+
         match event.kind {
             SessionEventKind::SessionStarted | SessionEventKind::SessionUpdated => {
                 snapshot.status = SessionStatus::Running;
@@ -76,13 +98,14 @@ impl PupkitDaemon {
                     tool_input_summary,
                 } = event.payload
                 {
-                    self.pending.clear_session(&event.session_id);
-                    self.pending.insert(PendingRequest {
-                        request_id: request_id.clone(),
-                        session_id: event.session_id.clone(),
-                        kind: AttentionKind::Approval,
-                        created_at: event.occurred_at,
-                    });
+                    self.pending.cancel_session(&event.session_id);
+                    let (request, waiter) = PendingRequest::new(
+                        request_id.clone(),
+                        event.session_id.clone(),
+                        AttentionKind::Approval,
+                        event.occurred_at,
+                    );
+                    self.pending.insert(request);
                     snapshot.status = SessionStatus::WaitingApproval;
                     snapshot.attention = Some(AttentionSnapshot {
                         request_id,
@@ -90,6 +113,7 @@ impl PupkitDaemon {
                         message: format!("{tool_name}: {tool_input_summary}"),
                         options: vec!["allow".to_string(), "deny".to_string()],
                     });
+                    wait_handle = Some(waiter);
                 }
             }
             SessionEventKind::QuestionRequested => {
@@ -99,13 +123,14 @@ impl PupkitDaemon {
                     options,
                 } = event.payload
                 {
-                    self.pending.clear_session(&event.session_id);
-                    self.pending.insert(PendingRequest {
-                        request_id: request_id.clone(),
-                        session_id: event.session_id.clone(),
-                        kind: AttentionKind::Question,
-                        created_at: event.occurred_at,
-                    });
+                    self.pending.cancel_session(&event.session_id);
+                    let (request, waiter) = PendingRequest::new(
+                        request_id.clone(),
+                        event.session_id.clone(),
+                        AttentionKind::Question,
+                        event.occurred_at,
+                    );
+                    self.pending.insert(request);
                     snapshot.status = SessionStatus::WaitingQuestion;
                     snapshot.attention = Some(AttentionSnapshot {
                         request_id,
@@ -113,11 +138,12 @@ impl PupkitDaemon {
                         message: prompt,
                         options,
                     });
+                    wait_handle = Some(waiter);
                 }
             }
             SessionEventKind::CompletionPublished => {
                 if let SessionEventPayload::Completion { headline, body } = event.payload {
-                    self.pending.clear_session(&event.session_id);
+                    self.pending.cancel_session(&event.session_id);
                     snapshot.status = SessionStatus::CompletedRecent;
                     snapshot.attention = None;
                     snapshot.last_summary = Some(headline.clone());
@@ -136,14 +162,14 @@ impl PupkitDaemon {
             }
             SessionEventKind::FailurePublished => {
                 if let SessionEventPayload::Failure { headline, body } = event.payload {
-                    self.pending.clear_session(&event.session_id);
+                    self.pending.cancel_session(&event.session_id);
                     snapshot.status = SessionStatus::Failed;
                     snapshot.attention = None;
                     snapshot.last_summary = Some(format!("{headline}: {body}"));
                 }
             }
             SessionEventKind::SessionEnded => {
-                self.pending.clear_session(&event.session_id);
+                self.pending.cancel_session(&event.session_id);
                 snapshot.status = SessionStatus::Ended;
                 snapshot.attention = None;
             }
@@ -151,7 +177,12 @@ impl PupkitDaemon {
 
         self.registry.upsert(snapshot);
         self.persist_state()?;
-        Ok(())
+
+        if expect_blocking_waiter {
+            Ok(wait_handle)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn apply_ui_action(&mut self, action: UiAction) -> Result<Option<HookDecision>, String> {
@@ -212,7 +243,7 @@ impl PupkitDaemon {
     }
 
     pub fn state_snapshot(&self) -> UiStateSnapshot {
-        let sessions: Vec<SessionListItem> = self
+        let mut sessions: Vec<SessionListItem> = self
             .registry
             .all()
             .into_iter()
@@ -224,6 +255,7 @@ impl PupkitDaemon {
                 summary: snapshot.last_summary.clone(),
             })
             .collect();
+        sessions.sort_by_key(|item| (item.status.priority_rank(), item.title.clone()));
 
         let top_attention = select_top_session(self.registry.all()).and_then(|snapshot| {
             let attention = snapshot.attention.as_ref()?;
@@ -284,14 +316,29 @@ top attention: {}",
 #[cfg(test)]
 mod tests {
     use super::PupkitDaemon;
+    use crate::daemon::DaemonConfig;
     use crate::protocol::{
         RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionId, SourceKind,
         UiAction,
     };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_config(name: &str) -> DaemonConfig {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("pupkit-daemon-{name}-{ts}-{}", std::process::id()));
+        DaemonConfig {
+            socket_path: root.join("pupkitd.sock"),
+            state_path: root.join("daemon-state.json"),
+        }
+    }
 
     #[test]
     fn top_attention_prefers_approval_requests() {
-        let mut daemon = PupkitDaemon::bootstrap();
+        let mut daemon = PupkitDaemon::for_config(temp_config("priority"));
         daemon
             .ingest_event(
                 SessionEvent::new(
@@ -329,7 +376,7 @@ mod tests {
 
     #[test]
     fn approve_action_clears_attention() {
-        let mut daemon = PupkitDaemon::bootstrap();
+        let mut daemon = PupkitDaemon::for_config(temp_config("approve"));
         daemon
             .ingest_event(
                 SessionEvent::new(
