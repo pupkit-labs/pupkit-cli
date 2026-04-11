@@ -1,5 +1,7 @@
 mod app;
 mod config;
+mod pending;
+mod persistence;
 mod priority;
 mod registry;
 
