@@ -73,6 +73,7 @@ struct PendingToolTracker {
 
 struct PendingToolCall {
     session_id: String,
+    source: SourceKind,
     tool_name: String,
     summary: String,
     first_seen_poll: u64,
@@ -80,9 +81,10 @@ struct PendingToolCall {
 
 impl PendingToolTracker {
     /// Record tool calls from an assistant.message event.
-    fn record_requested(&mut self, tool_call_id: String, session_id: String, tool_name: String, summary: String) {
+    fn record_requested(&mut self, tool_call_id: String, session_id: String, source: SourceKind, tool_name: String, summary: String) {
         self.pending.entry(tool_call_id).or_insert(PendingToolCall {
             session_id,
+            source,
             tool_name,
             summary,
             first_seen_poll: self.poll_count,
@@ -96,7 +98,8 @@ impl PendingToolTracker {
 
     /// Advance the poll counter and return approval events for tool calls
     /// that have been pending since the previous poll (survived one full cycle).
-    fn advance_poll(&mut self) -> Vec<(String, String, String)> {
+    /// Returns (session_id, source, tool_name, summary) tuples.
+    fn advance_poll(&mut self) -> Vec<(String, SourceKind, String, String)> {
         self.poll_count += 1;
         let cutoff = self.poll_count.saturating_sub(1);
         let mut approvals = Vec::new();
@@ -109,7 +112,7 @@ impl PendingToolTracker {
             .collect();
         for id in stale_ids {
             if let Some(tc) = self.pending.remove(&id) {
-                approvals.push((tc.session_id, tc.tool_name, tc.summary));
+                approvals.push((tc.session_id, tc.source, tc.tool_name, tc.summary));
             }
         }
         approvals
@@ -191,29 +194,37 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
             }
 
             // Emit ApprovalRequested events for stale pending tool calls
-            for (session_id, tool_name, summary) in approvals {
-                eprintln!("[watcher] approval needed: {} ({}) in session {}", tool_name, summary, session_id);
+            for (session_id, source, tool_name, summary) in approvals {
+                eprintln!("[watcher] approval needed: {} ({}) in session {} [{:?}]", tool_name, summary, session_id, source);
+                let title = match &source {
+                    SourceKind::ClaudeCode => "Claude Code",
+                    SourceKind::Codex => "Codex",
+                    SourceKind::Copilot => "Copilot Chat",
+                    SourceKind::Unknown => "AI Tool",
+                };
                 let event = SessionEvent::new(
-                    SourceKind::Unknown,
+                    source.clone(),
                     SessionId::new(&session_id),
                     SessionEventKind::ApprovalRequested,
                 )
-                .with_title("Copilot Chat")
+                .with_title(title)
                 .with_summary(format!("{tool_name}: {summary}"))
                 .with_payload(SessionEventPayload::ApprovalRequest {
-                    request_id: RequestId::new(format!("copilot-approve-{}", current_epoch_secs())),
+                    request_id: RequestId::new(format!("approve-{}", current_epoch_secs())),
                     tool_name,
                     tool_input_summary: summary,
                 });
-                // Discover TTY for the approval
-                let copilot_root = home.join(".copilot/session-state");
-                let session_dir = copilot_root.join(&session_id);
-                if let Some(tty) = tty_inject::discover_tty(&session_dir) {
-                    daemon.copilot_ttys_mut().set(
-                        SessionId::new(&session_id),
-                        tty,
-                        vec!["allow".into(), "deny".into()],
-                    );
+                // Discover TTY for Copilot approval injection
+                if matches!(source, SourceKind::Copilot) {
+                    let copilot_root = home.join(".copilot/session-state");
+                    let session_dir = copilot_root.join(&session_id);
+                    if let Some(tty) = tty_inject::discover_tty(&session_dir) {
+                        daemon.copilot_ttys_mut().set(
+                            SessionId::new(&session_id),
+                            tty,
+                            vec!["allow".into(), "deny".into()],
+                        );
+                    }
                 }
                 let _ = daemon.ingest_event(event);
             }
@@ -281,10 +292,12 @@ fn poll_all_sources(
             }
             let new_lines = read_new_lines(&path, cursors);
             for line in new_lines {
-                // For Copilot files, track tool calls for approval detection
-                if matches!(source.kind, WatchSourceKind::Copilot) {
-                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                        track_copilot_tool_calls(&value, &path, tool_tracker);
+                // Track tool calls for approval detection (all sources)
+                if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    match source.kind {
+                        WatchSourceKind::Copilot => track_copilot_tool_calls(&value, &path, tool_tracker),
+                        WatchSourceKind::Claude => track_claude_tool_calls(&value, &path, tool_tracker),
+                        WatchSourceKind::Codex => track_codex_tool_calls(&value, &path, tool_tracker),
                     }
                 }
                 if let Some(event) = parse_line(&line, &source.kind, &path) {
@@ -529,8 +542,10 @@ fn parse_codex_line(value: &Value, path: &Path) -> Option<SessionEvent> {
 
 /// Parse a Copilot JSONL line.
 ///
-/// Copilot has types: assistant.message, assistant.turn_start, tool.execution_start, etc.
+/// Copilot has types: session.start, assistant.message, assistant.turn_start,
+/// tool.execution_start, etc.
 /// We generate:
+/// - `session.start` → SessionStarted (with CWD)
 /// - `assistant.turn_start` → SessionUpdated
 /// - `assistant.message` with `ask_user` tool → QuestionRequested
 /// - `assistant.message` (other) → SessionUpdated
@@ -539,6 +554,29 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
     let occurred_at = extract_timestamp(value);
 
     match line_type {
+        "session.start" => {
+            let session_id = session_id_from_copilot_path(path);
+            let data = value.get("data")?;
+            let cwd = data
+                .get("context")
+                .and_then(|c| c.get("cwd"))
+                .and_then(|v| v.as_str());
+            let title = cwd
+                .and_then(|c| c.rsplit('/').next())
+                .map(|dir| format!("Copilot · {dir}"))
+                .unwrap_or_else(|| "Copilot Chat".to_string());
+            let mut event = SessionEvent::new(
+                SourceKind::Copilot,
+                SessionId::new(&session_id),
+                SessionEventKind::SessionStarted,
+            )
+            .with_title(title)
+            .with_occurred_at(occurred_at);
+            if let Some(cwd) = cwd {
+                event = event.with_cwd(cwd.to_string());
+            }
+            Some(event)
+        }
         "assistant.message" => {
             let session_id = session_id_from_copilot_path(path);
             let data = value.get("data")?;
@@ -568,7 +606,7 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
                             .unwrap_or("copilot-ask");
 
                         let event = SessionEvent::new(
-                            SourceKind::Unknown,
+                            SourceKind::Copilot,
                             SessionId::new(&session_id),
                             SessionEventKind::QuestionRequested,
                         )
@@ -589,7 +627,7 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
 
             // Regular assistant message → SessionUpdated
             let mut event = SessionEvent::new(
-                SourceKind::Unknown,
+                SourceKind::Copilot,
                 SessionId::new(&session_id),
                 SessionEventKind::SessionUpdated,
             );
@@ -603,7 +641,7 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
         "assistant.turn_start" => {
             let session_id = session_id_from_copilot_path(path);
             let event = SessionEvent::new(
-                SourceKind::Unknown,
+                SourceKind::Copilot,
                 SessionId::new(&session_id),
                 SessionEventKind::SessionUpdated,
             )
@@ -654,18 +692,13 @@ fn track_copilot_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToo
                                 .or_else(|| a.get("file_text"))
                         })
                         .and_then(|v| v.as_str())
-                        .map(|s| {
-                            if s.len() > 80 {
-                                format!("{}…", &s[..77])
-                            } else {
-                                s.to_string()
-                            }
-                        })
+                        .map(|s| truncate_summary(s))
                         .unwrap_or_else(|| tool_name.to_string());
 
                     tracker.record_requested(
                         tool_call_id,
                         session_id.clone(),
+                        SourceKind::Copilot,
                         tool_name.to_string(),
                         summary,
                     );
@@ -682,6 +715,185 @@ fn track_copilot_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToo
             }
         }
         _ => {}
+    }
+}
+
+/// Approval-relevant tool names for Claude Code.
+const CLAUDE_APPROVAL_TOOLS: &[&str] = &["Bash", "Write", "Edit", "MultiEdit"];
+
+/// Track Claude Code tool calls for approval detection.
+///
+/// Records `tool_use` from assistant messages and clears them on `tool_result`.
+fn track_claude_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToolTracker) {
+    let line_type = match value.get("type").and_then(|t| t.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+    let session_id = value
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| session_id_from_path(path));
+
+    match line_type {
+        "assistant" => {
+            let message = match value.get("message") {
+                Some(m) => m,
+                None => return,
+            };
+            // Only track when stop_reason is "tool_use" (model wants to call a tool)
+            if message.get("stop_reason").and_then(|v| v.as_str()) != Some("tool_use") {
+                return;
+            }
+            if let Some(contents) = message.get("content").and_then(|c| c.as_array()) {
+                for item in contents {
+                    if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                        continue;
+                    }
+                    let tool_name = match item.get("name").and_then(|n| n.as_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if !CLAUDE_APPROVAL_TOOLS.contains(&tool_name) {
+                        continue;
+                    }
+                    let tool_call_id = match item.get("id").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => continue,
+                    };
+                    let summary = item
+                        .get("input")
+                        .and_then(|inp| {
+                            inp.get("command")
+                                .or_else(|| inp.get("path"))
+                                .or_else(|| inp.get("file_path"))
+                        })
+                        .and_then(|v| v.as_str())
+                        .map(|s| truncate_summary(s))
+                        .unwrap_or_else(|| tool_name.to_string());
+
+                    tracker.record_requested(
+                        tool_call_id,
+                        session_id.clone(),
+                        SourceKind::ClaudeCode,
+                        tool_name.to_string(),
+                        summary,
+                    );
+                }
+            }
+        }
+        "user" => {
+            // tool_result clears pending tool calls
+            if let Some(contents) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                for item in contents {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                        if let Some(id) = item.get("tool_use_id").and_then(|v| v.as_str()) {
+                            tracker.mark_started(id);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Codex approval-relevant tool names.
+const CODEX_APPROVAL_TOOLS: &[&str] = &["exec_command", "apply_patch"];
+
+/// Track Codex tool calls for approval detection.
+///
+/// Records `function_call` from response_item and clears on `function_call_output`
+/// or `exec_command_end`.
+fn track_codex_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToolTracker) {
+    let line_type = match value.get("type").and_then(|t| t.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+    let session_id = session_id_from_path(path);
+
+    match line_type {
+        "response_item" => {
+            let payload = match value.get("payload") {
+                Some(p) => p,
+                None => return,
+            };
+            let payload_type = match payload.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => return,
+            };
+            match payload_type {
+                "function_call" => {
+                    let tool_name = match payload.get("name").and_then(|n| n.as_str()) {
+                        Some(n) => n,
+                        None => return,
+                    };
+                    if !CODEX_APPROVAL_TOOLS.contains(&tool_name) {
+                        return;
+                    }
+                    let call_id = match payload.get("call_id").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => return,
+                    };
+                    let summary = payload
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .and_then(|args| {
+                            args.get("cmd")
+                                .or_else(|| args.get("command"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| truncate_summary(s))
+                        })
+                        .unwrap_or_else(|| tool_name.to_string());
+
+                    tracker.record_requested(
+                        call_id,
+                        session_id,
+                        SourceKind::Codex,
+                        tool_name.to_string(),
+                        summary,
+                    );
+                }
+                "function_call_output" => {
+                    if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                        tracker.mark_started(call_id);
+                    }
+                }
+                "custom_tool_call" => {
+                    // apply_patch with status "completed" — clear immediately
+                    if payload.get("status").and_then(|v| v.as_str()) == Some("completed") {
+                        if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                            tracker.mark_started(call_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        "event_msg" => {
+            // exec_command_end also clears pending
+            if let Some(payload) = value.get("payload") {
+                if payload.get("type").and_then(|t| t.as_str()) == Some("exec_command_end") {
+                    if let Some(call_id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                        tracker.mark_started(call_id);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn truncate_summary(s: &str) -> String {
+    if s.len() > 80 {
+        format!("{}…", &s[..77])
+    } else {
+        s.to_string()
     }
 }
 
@@ -966,5 +1178,285 @@ mod tests {
         let v: Value = serde_json::from_str(r#"{"timestamp":"2026-01-01T00:00:00.000Z"}"#).unwrap();
         let ts = extract_timestamp(&v);
         assert!(ts > 1_700_000_000 && ts < 2_000_000_000);
+    }
+
+    #[test]
+    fn copilot_session_start_emits_started_with_cwd() {
+        let json = r#"{
+            "type": "session.start",
+            "data": {
+                "sessionId": "abc-123",
+                "copilotVersion": "1.0.14",
+                "context": { "cwd": "/Users/test/my-project" }
+            },
+            "timestamp": "2026-04-01T02:57:21.058Z"
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        let path = Path::new("/home/.copilot/session-state/abc-123/events.jsonl");
+        let event = parse_copilot_line(&value, path).expect("should parse session.start");
+        assert_eq!(event.kind, SessionEventKind::SessionStarted);
+        assert_eq!(event.source, SourceKind::Copilot);
+        assert_eq!(event.cwd.as_deref(), Some("/Users/test/my-project"));
+        assert_eq!(event.title.as_deref(), Some("Copilot · my-project"));
+    }
+
+    #[test]
+    fn copilot_source_kind_is_copilot_not_unknown() {
+        let json = r#"{
+            "type": "assistant.turn_start",
+            "data": {},
+            "timestamp": "2026-04-01T03:00:00.000Z"
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        let path = Path::new("/home/.copilot/session-state/sess-1/events.jsonl");
+        let event = parse_copilot_line(&value, path).expect("should parse turn_start");
+        assert_eq!(event.source, SourceKind::Copilot);
+    }
+
+    // --- Claude Code approval tracking tests ---
+
+    #[test]
+    fn claude_tool_use_records_pending_and_tool_result_clears() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.claude/projects/abc/session-1.jsonl");
+
+        // assistant with tool_use
+        let tool_use_json = r#"{
+            "type": "assistant",
+            "sessionId": "session-1",
+            "message": {
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_abc",
+                    "name": "Bash",
+                    "input": { "command": "ls -la" }
+                }]
+            }
+        }"#;
+        let value: Value = serde_json::from_str(tool_use_json).unwrap();
+        track_claude_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+        assert!(tracker.pending.contains_key("call_abc"));
+        assert_eq!(tracker.pending["call_abc"].source, SourceKind::ClaudeCode);
+
+        // user with tool_result clears it
+        let result_json = r#"{
+            "type": "user",
+            "sessionId": "session-1",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "call_abc",
+                    "content": "file1.rs\nfile2.rs"
+                }]
+            }
+        }"#;
+        let value: Value = serde_json::from_str(result_json).unwrap();
+        track_claude_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn claude_non_approval_tool_is_ignored() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.claude/projects/abc/session-1.jsonl");
+
+        let json = r#"{
+            "type": "assistant",
+            "sessionId": "session-1",
+            "message": {
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_xyz",
+                    "name": "Read",
+                    "input": { "path": "/etc/hosts" }
+                }]
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_claude_tool_calls(&value, path, &mut tracker);
+        // "Read" is not in CLAUDE_APPROVAL_TOOLS
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn claude_end_turn_is_not_tracked() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.claude/projects/abc/session-1.jsonl");
+
+        let json = r#"{
+            "type": "assistant",
+            "sessionId": "session-1",
+            "message": {
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "Done!" }]
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_claude_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn claude_stale_tool_call_becomes_approval() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.claude/projects/abc/sess.jsonl");
+
+        let json = r#"{
+            "type": "assistant",
+            "sessionId": "sess",
+            "message": {
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_stale",
+                    "name": "Bash",
+                    "input": { "command": "rm -rf /" }
+                }]
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_claude_tool_calls(&value, path, &mut tracker);
+
+        // First advance: tool just seen, not yet stale
+        let approvals = tracker.advance_poll();
+        assert!(approvals.is_empty());
+
+        // Second advance: now it's stale → approval emitted
+        let approvals = tracker.advance_poll();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].0, "sess"); // session_id
+        assert_eq!(approvals[0].1, SourceKind::ClaudeCode); // source
+        assert_eq!(approvals[0].2, "Bash"); // tool_name
+    }
+
+    // --- Codex approval tracking tests ---
+
+    #[test]
+    fn codex_function_call_records_pending_and_output_clears() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.codex/sessions/2026/04/08/rollout-sess1.jsonl");
+
+        let call_json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_codex_1",
+                "arguments": "{\"cmd\":\"pwd\"}"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(call_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+        assert!(tracker.pending.contains_key("call_codex_1"));
+        assert_eq!(tracker.pending["call_codex_1"].source, SourceKind::Codex);
+
+        // function_call_output clears it
+        let output_json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_codex_1",
+                "output": "/Users/test"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(output_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn codex_exec_command_end_also_clears_pending() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.codex/sessions/rollout-sess2.jsonl");
+
+        // Record a pending call
+        let call_json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_end_test",
+                "arguments": "{\"cmd\":\"echo hi\"}"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(call_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+
+        // exec_command_end clears it
+        let end_json = r#"{
+            "type": "event_msg",
+            "payload": {
+                "type": "exec_command_end",
+                "call_id": "call_end_test",
+                "exit_code": 0,
+                "status": "completed"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(end_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn codex_stale_function_call_becomes_approval() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.codex/sessions/rollout-sess3.jsonl");
+
+        let json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_stale_codex",
+                "arguments": "{\"cmd\":\"dangerous-cmd\"}"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+
+        let _ = tracker.advance_poll(); // not stale yet
+        let approvals = tracker.advance_poll(); // now stale
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].1, SourceKind::Codex);
+        assert_eq!(approvals[0].2, "exec_command");
+    }
+
+    #[test]
+    fn codex_completed_custom_tool_call_is_auto_cleared() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.codex/sessions/rollout-sess4.jsonl");
+
+        // First record a function_call for apply_patch
+        let call_json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "apply_patch",
+                "call_id": "call_patch_1",
+                "arguments": "{}"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(call_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+
+        // custom_tool_call with status "completed" clears it
+        let completed_json = r#"{
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "status": "completed",
+                "call_id": "call_patch_1",
+                "name": "apply_patch"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(completed_json).unwrap();
+        track_codex_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
     }
 }

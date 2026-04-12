@@ -7,6 +7,7 @@ use crate::protocol::SessionId;
 pub enum SourceKind {
     ClaudeCode,
     Codex,
+    Copilot,
     Unknown,
 }
 
