@@ -271,6 +271,7 @@ mod tests {
         track_codex_tool_calls(&value, path, &mut tracker);
 
         let _ = tracker.advance_poll();
+        let _ = tracker.advance_poll();
         let approvals = tracker.advance_poll();
         assert_eq!(approvals.len(), 1);
         assert_eq!(approvals[0].1, SourceKind::Codex);

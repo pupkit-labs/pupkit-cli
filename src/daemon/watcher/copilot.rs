@@ -115,6 +115,19 @@ pub(super) fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEv
             .with_occurred_at(occurred_at);
             Some(event)
         }
+        "tool.execution_complete" => {
+            // Emit SessionUpdated on tool completion so the session's
+            // last_updated timestamp advances and any false approval state
+            // can be superseded by the next assistant turn.
+            let session_id = session_id_from_copilot_path(path);
+            let event = SessionEvent::new(
+                SourceKind::Copilot,
+                SessionId::new(&session_id),
+                SessionEventKind::SessionUpdated,
+            )
+            .with_occurred_at(occurred_at);
+            Some(event)
+        }
         _ => None,
     }
 }
@@ -367,7 +380,11 @@ mod tests {
         let approvals = tracker.advance_poll();
         assert!(approvals.is_empty());
 
-        // Second advance: stale → approval emitted
+        // Second advance: still not stale (need 3 polls total)
+        let approvals = tracker.advance_poll();
+        assert!(approvals.is_empty());
+
+        // Third advance: now stale → approval emitted
         let approvals = tracker.advance_poll();
         assert_eq!(approvals.len(), 1);
         assert_eq!(approvals[0].1, SourceKind::Copilot);

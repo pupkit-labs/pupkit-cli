@@ -113,7 +113,11 @@ impl PendingToolTracker {
     /// Returns (session_id, source, tool_name, summary, jsonl_path) tuples.
     fn advance_poll(&mut self) -> Vec<(String, SourceKind, String, String, Option<PathBuf>)> {
         self.poll_count += 1;
-        let cutoff = self.poll_count.saturating_sub(1);
+        // Require 3 poll cycles (≈15s) before declaring an approval.
+        // This avoids false positives from auto-approved but slow commands
+        // (e.g., cargo build, sleep, npm install) while still catching
+        // genuine approval prompts where the user is deciding.
+        let cutoff = self.poll_count.saturating_sub(2);
         let mut approvals = Vec::new();
         let stale_ids: Vec<String> = self
             .pending

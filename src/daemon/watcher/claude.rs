@@ -306,6 +306,9 @@ mod tests {
         assert!(approvals.is_empty());
 
         let approvals = tracker.advance_poll();
+        assert!(approvals.is_empty());
+
+        let approvals = tracker.advance_poll();
         assert_eq!(approvals.len(), 1);
         assert_eq!(approvals[0].0, "sess");
         assert_eq!(approvals[0].1, SourceKind::ClaudeCode);
