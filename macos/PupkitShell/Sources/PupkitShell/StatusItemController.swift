@@ -14,11 +14,10 @@ final class StatusItemController: NSObject {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let logoURL = Bundle.module.url(forResource: "pupkit_logo", withExtension: "png"),
            let img = NSImage(contentsOf: logoURL) {
-            img.isTemplate = true
-            img.size = NSSize(width: 18, height: 18)
+            img.size = NSSize(width: 20, height: 20)
             item.button?.image = img
             item.button?.imagePosition = .imageLeading
-            item.button?.title = " Pupkit"
+            item.button?.title = ""
         } else {
             item.button?.title = "Pupkit"
         }
@@ -32,7 +31,7 @@ final class StatusItemController: NSObject {
         latestSnapshot = snapshot
         let attentionCount = snapshot.attentions.count
         if attentionCount > 0 {
-            statusItem?.button?.title = " (\(attentionCount))"
+            statusItem?.button?.title = "·\(attentionCount)"
         } else {
             statusItem?.button?.title = ""
         }

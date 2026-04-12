@@ -747,7 +747,24 @@ struct IslandContentView: View {
         [0,0,0,0,0,0,0,0,0,0,0,0],  // row3 bot (empty)
     ]
 
+    // ALL tab: 2×2 grid / dashboard icon (12 cols × 12 rows, 1:1 pixel ratio)
+    private static let allPixels: [[UInt8]] = [
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [0,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+        [1,1,1,1,1,0,0,1,1,1,1,1],
+    ]
+
     private static let toolPixelMap: [String: [[UInt8]]] = [
+        "ALL": allPixels,
         "ClaudeCode": claudePixels,
         "Codex": codexPixels,
         "Copilot": copilotPixels,
