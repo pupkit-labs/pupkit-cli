@@ -534,8 +534,8 @@ struct IslandContentView: View {
             .frame(width: currentWidth, height: currentHeight, alignment: .top)
         }
         .overlay(alignment: .top) {
-            if !isOpened {
-                usageStrip(notchWidth: closedWidth, totalWidth: layoutWidth)
+            if isOpened {
+                usageStrip(notchWidth: closedNotchWidth, totalWidth: layoutWidth)
                     .frame(height: closedNotchHeight)
             }
         }
