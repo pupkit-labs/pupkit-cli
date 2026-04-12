@@ -5,8 +5,7 @@
 //! Island, we inject arrow-key sequences into the TTY to select the answer.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -106,24 +105,56 @@ fn find_tty_for_pid(pid: u32) -> Option<PathBuf> {
 
 // MARK: - Keystroke Injection
 
-/// Inject a choice selection by sending arrow-down keys and Enter to the TTY.
+/// Inject a choice selection via osascript + iTerm2.
+///
+/// Direct TTY writes go to the output side, not input. On macOS 15+, TIOCSTI
+/// is blocked. So we use iTerm2's AppleScript API to send keystrokes to the
+/// specific session identified by its TTY device path.
 ///
 /// The Copilot `ask_user` TUI starts with the first option selected (index 0).
 /// To select option N, we send N down-arrow sequences, then Enter.
 fn inject_choice(tty_path: &Path, choice_index: usize) -> std::io::Result<()> {
-    let mut tty = OpenOptions::new().write(true).open(tty_path)?;
+    let tty_str = tty_path.to_string_lossy();
 
-    // Send down-arrow keys: ESC [ B
+    // Build the AppleScript to send keystrokes to the right iTerm2 session
+    let mut arrow_commands = String::new();
     for _ in 0..choice_index {
-        tty.write_all(b"\x1b[B")?;
+        arrow_commands.push_str(
+            "                    tell s to write text (character id 27) & \"[B\" without newline\n\
+             \x20                   delay 0.05\n",
+        );
     }
 
-    // Small flush between arrows and enter for TUI to process
-    tty.flush()?;
+    let script = format!(
+        r#"tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if tty of s is "{tty}" then
+{arrows}                    tell s to write text (character id 13) without newline
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return "session not found"
+end tell"#,
+        tty = tty_str,
+        arrows = arrow_commands,
+    );
 
-    // Send Enter
-    tty.write_all(b"\r")?;
-    tty.flush()?;
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+
+    let result = String::from_utf8_lossy(&output.stdout);
+    if result.trim() != "ok" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("iTerm2 session not found for {tty_str}: {result}"),
+        ));
+    }
 
     Ok(())
 }
@@ -166,21 +197,18 @@ mod tests {
         let mut store = CopilotTtyStore::default();
         let sid = SessionId::new("test-session");
 
-        // Set with a nonexistent TTY — inject will fail but the lookup should work
         store.set(
             sid.clone(),
             PathBuf::from("/dev/null"),
             vec!["Option A".into(), "Option B".into(), "Option C".into()],
         );
 
-        // After inject (even failed), entry should be removed
+        // osascript won't find an iTerm2 session for /dev/null — inject returns Err
         let result = store.inject_answer(&sid, "Option B");
-        // /dev/null accepts writes, so this should succeed
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+        assert!(result.is_err());
 
-        // Entry should be consumed
-        assert!(store.inject_answer(&sid, "Option A").unwrap() == false);
+        // Entry should be consumed after inject attempt (removed before injection)
+        assert_eq!(store.inject_answer(&sid, "Option A").unwrap(), false);
     }
 
     #[test]

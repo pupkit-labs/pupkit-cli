@@ -88,12 +88,18 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                         // Derive session dir from the Copilot root
                         let copilot_root = home.join(".copilot/session-state");
                         let session_dir = copilot_root.join(event.session_id.as_str());
-                        if let Some(tty) = tty_inject::discover_tty(&session_dir) {
-                            daemon.copilot_ttys_mut().set(
-                                event.session_id.clone(),
-                                tty,
-                                options.clone(),
-                            );
+                        match tty_inject::discover_tty(&session_dir) {
+                            Some(tty) => {
+                                eprintln!("[watcher] TTY discovered for {}: {}", event.session_id.as_str(), tty.display());
+                                daemon.copilot_ttys_mut().set(
+                                    event.session_id.clone(),
+                                    tty,
+                                    options.clone(),
+                                );
+                            }
+                            None => {
+                                eprintln!("[watcher] TTY discovery failed for session dir: {}", session_dir.display());
+                            }
                         }
                     }
                 }

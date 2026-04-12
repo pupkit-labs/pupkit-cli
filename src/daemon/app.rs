@@ -242,7 +242,13 @@ impl PupkitDaemon {
                 // Try TTY injection for Copilot sessions before resolving
                 let session_id = self.pending.session_for_request(&request_id);
                 if let Some(sid) = &session_id {
-                    let _ = self.copilot_ttys.inject_answer(sid, &option_id);
+                    match self.copilot_ttys.inject_answer(sid, &option_id) {
+                        Ok(true) => eprintln!("[tty] injected answer for session {}", sid.as_str()),
+                        Ok(false) => eprintln!("[tty] no TTY entry for session {}", sid.as_str()),
+                        Err(e) => eprintln!("[tty] injection failed: {e}"),
+                    }
+                } else {
+                    eprintln!("[tty] no session found for request {:?}", request_id.as_str());
                 }
                 self.pending
                     .resolve_answer(&request_id, UserAnswer::Option { option_id })
