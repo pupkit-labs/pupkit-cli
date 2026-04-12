@@ -110,6 +110,10 @@ final class NotchPanelController {
         panel?.allowsKeyStatus = needsKey
         if needsKey {
             panel?.makeKeyAndOrderFront(nil)
+            // Ensure the panel stays focusable after view updates
+            DispatchQueue.main.async { [weak panel] in
+                panel?.makeKeyAndOrderFront(nil)
+            }
         }
 
         updateView()
@@ -152,7 +156,7 @@ final class NotchPanelController {
         let insetH = IslandMetrics.openedShadowHorizontalInset
         let insetB = IslandMetrics.openedShadowBottomInset
         let openedWidth = IslandMetrics.openedPanelWidth
-        let contentHeight: CGFloat = 360
+        let contentHeight: CGFloat = 720
         let width = openedWidth + (insetH * 2) + 28
         let height = screen.islandClosedHeight + contentHeight + insetB
         return CGSize(width: width, height: height)
@@ -336,15 +340,6 @@ struct FlowLayout: Layout {
     }
 }
 
-// MARK: - Content Height Preference Key
-
-private struct ContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 // MARK: - Island Content View
 
 struct IslandContentView: View {
@@ -355,11 +350,76 @@ struct IslandContentView: View {
     let onAction: (UiAction) -> Void
 
     @State private var isHovering = false
-    @State private var measuredContentHeight: CGFloat = 80
     @State private var freeformTexts: [String: String] = [:]
+    @State private var selectedTab: String? = nil  // nil = "All"
+    @FocusState private var focusedField: String?
 
     private var hasAttention: Bool { !(snapshot?.attentions.isEmpty ?? true) }
     private var hasAnySessions: Bool { (snapshot?.sessions.count ?? 0) > 0 }
+
+    /// Compute opened content height based on what's currently visible
+    private var estimatedContentHeight: CGFloat {
+        let attentions = filteredAttentions
+        if !attentions.isEmpty {
+            let tabBarHeight: CGFloat = 36
+            var cardsHeight: CGFloat = 0
+            for att in attentions {
+                cardsHeight += estimatedCardHeight(for: att)
+            }
+            let spacing = CGFloat(max(0, attentions.count - 1)) * 12
+            let scrollContent = min(cardsHeight + spacing, 480)
+            // 22 = top padding(8) + VStack spacing(8) + bottom padding(6)
+            return tabBarHeight + scrollContent + 22
+        } else {
+            // Session info or empty state
+            let activeSources = Set(snapshot?.sessions.map(\.source) ?? [])
+            let hasTabBar = activeSources.count > 1
+            let tabBarHeight: CGFloat = hasTabBar ? 44 : 0  // 36 + 8 VStack spacing
+            let sessionInfoHeight: CGFloat = 56  // text lines + bottom padding(16)
+            // top padding(8) + tabBar + sessionInfo + bottom padding(6)
+            return 14 + tabBarHeight + sessionInfoHeight
+        }
+    }
+
+    /// Dynamically compute card height based on actual content
+    private func estimatedCardHeight(for att: AttentionCard) -> CGFloat {
+        let cardPadding: CGFloat = 24  // .padding(12) top + bottom
+        let vSpacing: CGFloat = 8      // VStack spacing
+        let titleHeight: CGFloat = 22
+        // Message: estimate lines from char count, capped at lineLimit(3)
+        let charsPerLine: CGFloat = 48
+        let msgLines = min(3, max(1, ceil(CGFloat(att.message.count) / charsPerLine)))
+        let messageHeight = msgLines * 20
+
+        var inner = titleHeight + vSpacing + messageHeight + vSpacing
+
+        switch att.status {
+        case .waitingApproval:
+            inner += 42   // HStack of 3 buttons
+        case .waitingQuestion:
+            // FlowLayout: estimate rows from option label widths
+            let availW: CGFloat = 440
+            var rowW: CGFloat = 0
+            var rows: CGFloat = 1
+            for opt in att.options {
+                let btnW = CGFloat(opt.count) * 9 + 34  // text + padding
+                if rowW + btnW + 8 > availW && rowW > 0 {
+                    rows += 1
+                    rowW = btnW
+                } else {
+                    rowW += (rowW > 0 ? 8 : 0) + btnW
+                }
+            }
+            inner += rows * 42 + max(0, rows - 1) * 8
+
+            if att.allow_freeform {
+                inner += vSpacing + 42  // input row
+            }
+        default:
+            break
+        }
+        return inner + cardPadding
+    }
 
     private var notchAnimation: Animation {
         isOpened ? openAnimation : closeAnimation
@@ -388,8 +448,8 @@ struct IslandContentView: View {
 
         let openedWidth = min(IslandMetrics.openedPanelWidth, layoutWidth - 28)
         // Dynamic height: header + measured content + padding, capped to available space
-        let dynamicOpenedHeight = closedNotchHeight + measuredContentHeight + 20
-        let openedHeight = min(dynamicOpenedHeight, layoutHeight - 14)
+        let dynamicOpenedHeight = closedNotchHeight + estimatedContentHeight + 4
+        let openedHeight = min(dynamicOpenedHeight, layoutHeight - 4)
 
         let closedWidth = closedNotchWidth
         let closedHeight = closedNotchHeight
@@ -417,15 +477,7 @@ struct IslandContentView: View {
                     // Expandable content
                     if isOpened {
                         openedContent
-                            .frame(width: openedWidth - 32)
-                            .background(
-                                GeometryReader { geo in
-                                    Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
-                                }
-                            )
-                            .onPreferenceChange(ContentHeightKey.self) { height in
-                                measuredContentHeight = max(height, 40)
-                            }
+                            .frame(width: openedWidth - 36)
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
@@ -492,143 +544,256 @@ struct IslandContentView: View {
         }
     }
 
+    // MARK: - Tool Tabs
+
+    // Brand-accurate accent colors
+    private static let toolTabs: [(key: String, tag: String, color: Color)] = [
+        ("ClaudeCode", "CC", Color(red: 0.855, green: 0.467, blue: 0.337)),  // #DA7756
+        ("Codex",      "CX", Color(red: 0.063, green: 0.639, blue: 0.498)),  // #10A37F
+        ("Copilot",    "CP", Color(red: 0.65, green: 0.45, blue: 0.95)),  // lighter purple
+    ]
+
+    private static let mono: Font = .system(size: 14, weight: .regular, design: .monospaced)
+    private static let monoSmall: Font = .system(size: 13, weight: .regular, design: .monospaced)
+    private static let monoBold: Font = .system(size: 14, weight: .medium, design: .monospaced)
+
+    private func attentionCount(for source: String?) -> Int {
+        guard let attentions = snapshot?.attentions else { return 0 }
+        if let source { return attentions.filter { $0.source == source }.count }
+        return attentions.count
+    }
+
+    private func sessionCount(for source: String?) -> Int {
+        guard let sessions = snapshot?.sessions else { return 0 }
+        if let source { return sessions.filter { $0.source == source }.count }
+        return sessions.count
+    }
+
+    private var filteredAttentions: [AttentionCard] {
+        guard let attentions = snapshot?.attentions else { return [] }
+        guard let tab = selectedTab else { return attentions }
+        return attentions.filter { $0.source == tab }
+    }
+
+    private var filteredSessions: [SessionListItem] {
+        guard let sessions = snapshot?.sessions else { return [] }
+        guard let tab = selectedTab else { return sessions }
+        return sessions.filter { $0.source == tab }
+    }
+
+    @ViewBuilder
+    private var toolTabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(tag: "ALL", isSelected: selectedTab == nil, badgeCount: 0) {
+                selectedTab = nil
+            }
+
+            ForEach(Self.toolTabs, id: \.key) { tab in
+                let count = attentionCount(for: tab.key)
+                let hasSessions = sessionCount(for: tab.key) > 0
+                if hasSessions || count > 0 {
+                    tabButton(tag: tab.tag, isSelected: selectedTab == tab.key, badgeCount: count, accentColor: tab.color) {
+                        selectedTab = tab.key
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func tabButton(tag: String, isSelected: Bool, badgeCount: Int, accentColor: Color = .white, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(accentColor.opacity(isSelected ? 0.85 : 0.35))
+                .frame(width: 12, height: 12)
+            Text(tag)
+                .font(Self.mono)
+                .foregroundStyle(isSelected ? .white.opacity(0.9) : .white.opacity(0.30))
+            if badgeCount > 0 {
+                Text("·\(badgeCount)")
+                    .font(Self.monoSmall)
+                    .foregroundStyle(Color(red: 0.9, green: 0.3, blue: 0.3))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .overlay(
+            Rectangle()
+                .frame(height: isSelected ? 2 : 1)
+                .foregroundStyle(isSelected ? accentColor.opacity(0.7) : .white.opacity(0.10)),
+            alignment: .bottom
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { action() }
+        }
+    }
+
     // MARK: - Opened Content
 
     @ViewBuilder
     private var openedContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            let attentions = snapshot?.attentions ?? []
+        VStack(alignment: .leading, spacing: 8) {
+            let activeSources = Set(snapshot?.sessions.map(\.source) ?? [])
+            if activeSources.count > 1 || hasAttention {
+                toolTabBar
+            }
+
+            let attentions = filteredAttentions
             if !attentions.isEmpty {
-                ScrollView(.vertical, showsIndicators: false) {
+                ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(Array(attentions.enumerated()), id: \.element.request_id) { _, attention in
                             attentionCardView(for: attention)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 320)
-            } else if hasAnySessions {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(snapshot?.sessions.count ?? 0) active session(s)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white)
-                    Text("No pending actions")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
+                .frame(maxHeight: 480)
             } else {
-                Text("No active sessions")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.4))
+                let sessions = filteredSessions
+                if !sessions.isEmpty {
+                    VStack(spacing: 2) {
+                        Text("\(sessions.count) session(s) active")
+                            .font(Self.mono)
+                            .foregroundStyle(.white.opacity(0.7))
+                        Text("no pending actions")
+                            .font(Self.monoSmall)
+                            .foregroundStyle(.white.opacity(0.35))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 16)
+                } else {
+                    Text("no active sessions")
+                        .font(Self.monoSmall)
+                        .foregroundStyle(.white.opacity(0.25))
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 16)
+                }
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 18)
         .padding(.top, 8)
+        .padding(.bottom, 6)
     }
+
+    // Dash-dot border: thin, bright
+    private static let dashDotStyle = StrokeStyle(lineWidth: 1.5, dash: [6, 3, 2, 3])
 
     @ViewBuilder
     private func attentionCardView(for attention: AttentionCard) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Source badge + title
-            HStack(spacing: 6) {
-                Text(sourceEmoji(attention.source))
-                    .font(.system(size: 11))
+        let accent = sourceAccent(attention.source)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                Text(sourceTag(attention.source))
+                    .font(Self.monoSmall)
+                    .foregroundStyle(accent.opacity(0.9))
                 Text(attention.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(Self.monoBold)
+                    .foregroundStyle(.white.opacity(0.50))
+                Spacer()
             }
             Text(attention.message)
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.7))
+                .font(Self.mono)
+                .foregroundStyle(.white.opacity(0.85))
                 .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            actionButtons(for: attention)
+            actionButtons(for: attention, accent: accent)
         }
-        .padding(10)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(accent.opacity(0.55), style: Self.dashDotStyle)
+        )
     }
 
-    private func sourceEmoji(_ source: String) -> String {
+    private func sourceTag(_ source: String) -> String {
         switch source {
-        case "ClaudeCode": return "🟠"
-        case "Codex": return "🟢"
-        case "Copilot": return "🔵"
-        default: return "⚪"
+        case "ClaudeCode": return "[CC]"
+        case "Codex":      return "[CX]"
+        case "Copilot":    return "[CP]"
+        default:           return "[??]"
+        }
+    }
+
+    private func sourceAccent(_ source: String) -> Color {
+        Self.toolTabs.first(where: { $0.key == source })?.color ?? .white.opacity(0.5)
+    }
+
+    // Brighter version of accent for send button (mix toward white by ~30%)
+    private static func brightenedAccent(_ source: String) -> Color {
+        switch source {
+        case "ClaudeCode": return Color(red: 0.92, green: 0.58, blue: 0.45)  // lighter terra cotta
+        case "Codex":      return Color(red: 0.15, green: 0.78, blue: 0.62)  // lighter teal
+        case "Copilot":    return Color(red: 0.72, green: 0.55, blue: 0.98)  // lighter purple
+        default:           return Color.white.opacity(0.6)
         }
     }
 
     // MARK: - Action Buttons
 
     @ViewBuilder
-    private func actionButtons(for attention: AttentionCard) -> some View {
+    private func actionButtons(for attention: AttentionCard, accent: Color) -> some View {
         switch attention.status {
         case .waitingApproval:
-            HStack(spacing: 8) {
-                Button {
+            HStack(spacing: 10) {
+                terminalButton("allow", color: Color(red: 0.30, green: 0.75, blue: 0.40), primary: true) {
                     onAction(.approve(requestId: attention.request_id, always: false))
-                } label: {
-                    Text("Allow")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color.green, in: Capsule())
                 }
-                .buttonStyle(.plain)
-
-                Button {
+                terminalButton("always", color: Color(red: 0.30, green: 0.75, blue: 0.40), primary: false) {
                     onAction(.approve(requestId: attention.request_id, always: true))
-                } label: {
-                    Text("Always Allow")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color.green.opacity(0.6), in: Capsule())
                 }
-                .buttonStyle(.plain)
-
-                Button {
+                terminalButton("deny", color: Color(red: 0.85, green: 0.30, blue: 0.30), primary: false) {
                     onAction(.deny(requestId: attention.request_id))
-                } label: {
-                    Text("Deny")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Color.red, in: Capsule())
                 }
-                .buttonStyle(.plain)
             }
 
         case .waitingQuestion:
-            VStack(spacing: 8) {
-                FlowLayout(spacing: 6) {
-                    ForEach(attention.options, id: \.self) { option in
-                        Button {
+            VStack(spacing: 10) {
+                FlowLayout(spacing: 8) {
+                    ForEach(Array(attention.options.enumerated()), id: \.element) { idx, option in
+                        terminalButton(option, color: Color(red: 0.40, green: 0.65, blue: 0.90), primary: idx == 0) {
                             onAction(.answerOption(requestId: attention.request_id, optionId: option))
-                        } label: {
-                            Text(option)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white)
-                                .lineLimit(2)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(Color.blue, in: Capsule())
                         }
-                        .buttonStyle(.plain)
                     }
                 }
 
                 if attention.allow_freeform {
-                    HStack(spacing: 6) {
-                        TextField("Type a response…", text: freeformBinding(for: attention.request_id))
+                    let inputBlue = Color(red: 0.40, green: 0.65, blue: 0.95)
+                    let isFocused = focusedField == attention.request_id
+                    HStack(spacing: 10) {
+                        TextField("…", text: freeformBinding(for: attention.request_id))
                             .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white)
+                            .font(Self.mono)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .tint(.white)
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.vertical, 10)
+                            .background(
+                                isFocused ? inputBlue.opacity(0.12) : Color.white.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 3)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .strokeBorder(
+                                        isFocused ? inputBlue.opacity(0.70) : inputBlue.opacity(0.35),
+                                        style: Self.dashDotStyle
+                                    )
+                                    .allowsHitTesting(false)
+                            )
+                            .focused($focusedField, equals: attention.request_id)
+                            .onHover { hovering in
+                                if hovering {
+                                    focusedField = attention.request_id
+                                } else if focusedField == attention.request_id {
+                                    focusedField = nil
+                                }
+                            }
                             .onSubmit {
                                 let text = freeformTexts[attention.request_id] ?? ""
                                 guard !text.isEmpty else { return }
@@ -642,17 +807,16 @@ struct IslandContentView: View {
                             onAction(.answerText(requestId: attention.request_id, text: text))
                             freeformTexts[attention.request_id] = ""
                         } label: {
-                            Image(systemName: "paperplane.fill")
-                                .font(.system(size: 12))
+                            Text(">")
+                                .font(Self.monoBold)
                                 .foregroundStyle(.white)
-                                .padding(6)
-                                .background(
-                                    (freeformTexts[attention.request_id] ?? "").isEmpty ? Color.gray.opacity(0.4) : Color.green,
-                                    in: Circle()
-                                )
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Self.brightenedAccent(attention.source), in: RoundedRectangle(cornerRadius: 3))
                         }
                         .buttonStyle(.plain)
                         .disabled((freeformTexts[attention.request_id] ?? "").isEmpty)
+                        .opacity((freeformTexts[attention.request_id] ?? "").isEmpty ? 0.40 : 1.0)
                     }
                 }
             }
@@ -662,10 +826,55 @@ struct IslandContentView: View {
         }
     }
 
+    @ViewBuilder
+    private func terminalButton(_ label: String, color: Color, primary: Bool = false, action: @escaping () -> Void) -> some View {
+        TerminalButtonView(label: label, color: color, primary: primary, action: action)
+    }
+
     private func freeformBinding(for requestId: String) -> Binding<String> {
         Binding(
             get: { freeformTexts[requestId] ?? "" },
             set: { freeformTexts[requestId] = $0 }
         )
+    }
+}
+
+// Separate struct for hover state on buttons
+private struct TerminalButtonView: View {
+    let label: String
+    let color: Color
+    let primary: Bool
+    let action: () -> Void
+
+    private static let mono = Font.system(size: 13, weight: .regular, design: .monospaced)
+    private static let dashDotStyle = StrokeStyle(lineWidth: 1.5, dash: [6, 3, 2, 3])
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Text(label)
+            .font(Self.mono)
+            .foregroundStyle(isHovered || primary ? color : color.opacity(0.70))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 8)
+            .background(
+                color.opacity(isHovered ? 0.30 : (primary ? 0.22 : 0.12)),
+                in: RoundedRectangle(cornerRadius: 3)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(
+                        color.opacity(isHovered ? 0.85 : (primary ? 0.70 : 0.40)),
+                        style: Self.dashDotStyle
+                    )
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+            }
+            .onTapGesture {
+                action()
+            }
     }
 }

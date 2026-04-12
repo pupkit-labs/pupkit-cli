@@ -31,7 +31,7 @@ extension NSScreen {
 // MARK: - Layout Constants
 
 enum IslandMetrics {
-    static let openedPanelWidth: CGFloat = 480
+    static let openedPanelWidth: CGFloat = 560
     static let openedShadowHorizontalInset: CGFloat = 18
     static let openedShadowBottomInset: CGFloat = 22
     static let closedHoverScale: CGFloat = 1.028
