@@ -372,8 +372,17 @@ end tell"#,
 fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
     let tty_str = tty_path.to_string_lossy();
 
-    // Build down-arrow commands to skip past all choices to the freeform input
+    // First, press up-arrow enough times to guarantee we're at the top of the list,
+    // regardless of where the user may have navigated manually.
+    // Then press down-arrow num_choices times to reach the freeform input option.
     let mut arrow_commands = String::new();
+    let up_presses = num_choices + 1;
+    for _ in 0..up_presses {
+        arrow_commands.push_str(
+            "                    tell s to write text (character id 27) & \"[A\" without newline\n\
+             \x20                   delay 0.03\n",
+        );
+    }
     for _ in 0..num_choices {
         arrow_commands.push_str(
             "                    tell s to write text (character id 27) & \"[B\" without newline\n\
