@@ -76,13 +76,13 @@ final class NotchPanelController {
     }
 
     func apply(snapshot: UiStateSnapshot?) {
-        let previousAttention = latestSnapshot?.top_attention?.request_id
+        let previousAttentionIds = Set(latestSnapshot?.attentions.map(\.request_id) ?? [])
         latestSnapshot = snapshot
         updateView()
 
-        let hasAttention = snapshot?.top_attention != nil
-        let isNewAttention = hasAttention && snapshot?.top_attention?.request_id != previousAttention
-        if isNewAttention && islandStatus == .closed {
+        let currentAttentionIds = Set(snapshot?.attentions.map(\.request_id) ?? [])
+        let hasNew = !currentAttentionIds.subtracting(previousAttentionIds).isEmpty
+        if hasNew && islandStatus == .closed {
             openIsland()
         }
     }
@@ -103,9 +103,10 @@ final class NotchPanelController {
         panel?.ignoresMouseEvents = false
         panel?.acceptsMouseMovedEvents = true
 
-        // Enable key window status if there's a freeform text input
-        let needsKey = latestSnapshot?.top_attention?.allow_freeform == true
-            && latestSnapshot?.top_attention?.status == .waitingQuestion
+        // Enable key window status if any attention has freeform text input
+        let needsKey = latestSnapshot?.attentions.contains(where: {
+            $0.allow_freeform && $0.status == .waitingQuestion
+        }) ?? false
         panel?.allowsKeyStatus = needsKey
         if needsKey {
             panel?.makeKeyAndOrderFront(nil)
@@ -355,9 +356,9 @@ struct IslandContentView: View {
 
     @State private var isHovering = false
     @State private var measuredContentHeight: CGFloat = 80
-    @State private var freeformText: String = ""
+    @State private var freeformTexts: [String: String] = [:]
 
-    private var hasAttention: Bool { snapshot?.top_attention != nil }
+    private var hasAttention: Bool { !(snapshot?.attentions.isEmpty ?? true) }
     private var hasAnySessions: Bool { (snapshot?.sessions.count ?? 0) > 0 }
 
     private var notchAnimation: Animation {
@@ -496,18 +497,16 @@ struct IslandContentView: View {
     @ViewBuilder
     private var openedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let attention = snapshot?.top_attention {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(attention.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(attention.message)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(3)
+            let attentions = snapshot?.attentions ?? []
+            if !attentions.isEmpty {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(attentions.enumerated()), id: \.element.request_id) { _, attention in
+                            attentionCardView(for: attention)
+                        }
+                    }
                 }
-
-                actionButtons(for: attention)
+                .frame(maxHeight: 320)
             } else if hasAnySessions {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(snapshot?.sessions.count ?? 0) active session(s)")
@@ -525,6 +524,37 @@ struct IslandContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private func attentionCardView(for attention: AttentionCard) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Source badge + title
+            HStack(spacing: 6) {
+                Text(sourceEmoji(attention.source))
+                    .font(.system(size: 11))
+                Text(attention.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            Text(attention.message)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(3)
+
+            actionButtons(for: attention)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func sourceEmoji(_ source: String) -> String {
+        switch source {
+        case "ClaudeCode": return "🟠"
+        case "Codex": return "🟢"
+        case "Copilot": return "🔵"
+        default: return "⚪"
+        }
     }
 
     // MARK: - Action Buttons
@@ -592,7 +622,7 @@ struct IslandContentView: View {
 
                 if attention.allow_freeform {
                     HStack(spacing: 6) {
-                        TextField("Type a response…", text: $freeformText)
+                        TextField("Type a response…", text: freeformBinding(for: attention.request_id))
                             .textFieldStyle(.plain)
                             .font(.system(size: 12))
                             .foregroundStyle(.white)
@@ -600,27 +630,29 @@ struct IslandContentView: View {
                             .padding(.vertical, 6)
                             .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .onSubmit {
-                                guard !freeformText.isEmpty else { return }
-                                onAction(.answerText(requestId: attention.request_id, text: freeformText))
-                                freeformText = ""
+                                let text = freeformTexts[attention.request_id] ?? ""
+                                guard !text.isEmpty else { return }
+                                onAction(.answerText(requestId: attention.request_id, text: text))
+                                freeformTexts[attention.request_id] = ""
                             }
 
                         Button {
-                            guard !freeformText.isEmpty else { return }
-                            onAction(.answerText(requestId: attention.request_id, text: freeformText))
-                            freeformText = ""
+                            let text = freeformTexts[attention.request_id] ?? ""
+                            guard !text.isEmpty else { return }
+                            onAction(.answerText(requestId: attention.request_id, text: text))
+                            freeformTexts[attention.request_id] = ""
                         } label: {
                             Image(systemName: "paperplane.fill")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white)
                                 .padding(6)
                                 .background(
-                                    freeformText.isEmpty ? Color.gray.opacity(0.4) : Color.green,
+                                    (freeformTexts[attention.request_id] ?? "").isEmpty ? Color.gray.opacity(0.4) : Color.green,
                                     in: Circle()
                                 )
                         }
                         .buttonStyle(.plain)
-                        .disabled(freeformText.isEmpty)
+                        .disabled((freeformTexts[attention.request_id] ?? "").isEmpty)
                     }
                 }
             }
@@ -628,5 +660,12 @@ struct IslandContentView: View {
         default:
             EmptyView()
         }
+    }
+
+    private func freeformBinding(for requestId: String) -> Binding<String> {
+        Binding(
+            get: { freeformTexts[requestId] ?? "" },
+            set: { freeformTexts[requestId] = $0 }
+        )
     }
 }

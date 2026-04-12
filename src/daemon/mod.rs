@@ -11,6 +11,7 @@ pub mod watcher;
 
 pub use app::PupkitDaemon;
 pub use config::DaemonConfig;
+pub use priority::collect_attention_sessions;
 pub use priority::select_top_session;
 pub use registry::SessionRegistry;
 pub use server::DaemonServer;

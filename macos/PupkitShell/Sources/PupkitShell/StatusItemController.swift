@@ -21,7 +21,7 @@ final class StatusItemController: NSObject {
 
     func apply(snapshot: UiStateSnapshot) {
         latestSnapshot = snapshot
-        let attentionCount = snapshot.top_attention == nil ? 0 : 1
+        let attentionCount = snapshot.attentions.count
         statusItem?.button?.title = attentionCount > 0 ? "🐶(\(attentionCount))" : "🐶"
         rebuildMenu(errorMessage: nil)
     }
@@ -40,7 +40,7 @@ final class StatusItemController: NSObject {
             menu.addItem(.separator())
         }
 
-        if let attention = latestSnapshot?.top_attention {
+        if let attention = latestSnapshot?.attentions.first {
             let attentionItem = NSMenuItem(title: "⚠ \(attention.title)", action: nil, keyEquivalent: "")
             attentionItem.isEnabled = false
             menu.addItem(attentionItem)
@@ -88,12 +88,12 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func approveAttention() {
-        guard let requestId = latestSnapshot?.top_attention?.request_id else { return }
+        guard let requestId = latestSnapshot?.attentions.first?.request_id else { return }
         sendAction(.approve(requestId: requestId, always: false))
     }
 
     @objc private func denyAttention() {
-        guard let requestId = latestSnapshot?.top_attention?.request_id else { return }
+        guard let requestId = latestSnapshot?.attentions.first?.request_id else { return }
         sendAction(.deny(requestId: requestId))
     }
 

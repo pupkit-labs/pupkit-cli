@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::daemon::pending::{PendingRequest, PendingStore, PendingWaitHandle};
 use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
 use crate::daemon::tty_inject::CopilotTtyStore;
-use crate::daemon::{DaemonConfig, SessionRegistry, select_top_session};
+use crate::daemon::{DaemonConfig, SessionRegistry, collect_attention_sessions, select_top_session};
 use crate::protocol::{
     ApprovalBehavior, AttentionCard, AttentionKind, AttentionSnapshot, CompletionItem,
     HookDecision, RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionListItem,
@@ -344,22 +344,25 @@ impl PupkitDaemon {
             )
         });
 
-        let top_attention = select_top_session(self.registry.all()).and_then(|snapshot| {
-            let attention = snapshot.attention.as_ref()?;
-            Some(AttentionCard {
-                session_id: snapshot.session_id.clone(),
-                request_id: attention.request_id.clone(),
-                source: snapshot.source.clone(),
-                title: snapshot.title.clone(),
-                status: snapshot.status.clone(),
-                message: attention.message.clone(),
-                options: attention.options.clone(),
-                allow_freeform: attention.allow_freeform,
+        let attentions: Vec<AttentionCard> = collect_attention_sessions(self.registry.all())
+            .into_iter()
+            .filter_map(|snapshot| {
+                let attention = snapshot.attention.as_ref()?;
+                Some(AttentionCard {
+                    session_id: snapshot.session_id.clone(),
+                    request_id: attention.request_id.clone(),
+                    source: snapshot.source.clone(),
+                    title: snapshot.title.clone(),
+                    status: snapshot.status.clone(),
+                    message: attention.message.clone(),
+                    options: attention.options.clone(),
+                    allow_freeform: attention.allow_freeform,
+                })
             })
-        });
+            .collect();
 
         UiStateSnapshot {
-            top_attention,
+            attentions,
             sessions,
             recent_completions: self.completions.clone(),
         }
@@ -368,8 +371,8 @@ impl PupkitDaemon {
     pub fn report(&mut self) -> String {
         let state = self.state_snapshot();
         let top = state
-            .top_attention
-            .as_ref()
+            .attentions
+            .first()
             .map(|card| format!("{} [{}]", card.title, card.message))
             .unwrap_or_else(|| "none".to_string());
         format!(
@@ -475,7 +478,7 @@ mod tests {
 
         let snapshot = daemon.state_snapshot();
         assert_eq!(
-            snapshot.top_attention.unwrap().session_id.as_str(),
+            snapshot.attentions.first().unwrap().session_id.as_str(),
             "session-approval"
         );
     }
@@ -507,7 +510,7 @@ mod tests {
             })
             .unwrap();
         assert!(decision.is_some());
-        assert!(daemon.state_snapshot().top_attention.is_none());
+        assert!(daemon.state_snapshot().attentions.is_empty());
     }
 
     #[test]
@@ -533,7 +536,7 @@ mod tests {
 
         let mut restored = PupkitDaemon::for_config(config);
         let snapshot = restored.state_snapshot();
-        assert!(snapshot.top_attention.is_none());
+        assert!(snapshot.attentions.is_empty());
         assert_eq!(
             snapshot.sessions[0].status,
             crate::protocol::SessionStatus::Stale

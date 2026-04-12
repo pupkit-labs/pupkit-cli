@@ -43,7 +43,7 @@ pub struct CompletionItem {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UiStateSnapshot {
-    pub top_attention: Option<AttentionCard>,
+    pub attentions: Vec<AttentionCard>,
     pub sessions: Vec<SessionListItem>,
     pub recent_completions: Vec<CompletionItem>,
 }

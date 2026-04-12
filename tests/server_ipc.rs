@@ -96,7 +96,7 @@ fn timeout_clears_waiting_attention_state() {
         .unwrap();
     match state {
         ServerResponse::StateSnapshot(snapshot) => {
-            assert!(snapshot.top_attention.is_none());
+            assert!(snapshot.attentions.is_empty());
         }
         other => panic!("unexpected state response: {other:?}"),
     }

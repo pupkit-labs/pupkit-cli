@@ -38,7 +38,7 @@ struct CompletionItem: Decodable {
 }
 
 struct UiStateSnapshot: Decodable {
-    let top_attention: AttentionCard?
+    let attentions: [AttentionCard]
     let sessions: [SessionListItem]
     let recent_completions: [CompletionItem]
 }
