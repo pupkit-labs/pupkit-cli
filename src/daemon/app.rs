@@ -8,7 +8,7 @@ use crate::daemon::{DaemonConfig, SessionRegistry, collect_attention_sessions, s
 use crate::protocol::{
     ApprovalBehavior, AttentionCard, AttentionKind, AttentionSnapshot, CompletionItem,
     HookDecision, RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionListItem,
-    SessionSnapshot, SessionStatus, UiAction, UiStateSnapshot, UserAnswer,
+    SessionSnapshot, SessionStatus, SourceKind, UiAction, UiStateSnapshot, UserAnswer,
 };
 
 #[derive(Debug)]
@@ -72,13 +72,16 @@ impl PupkitDaemon {
             .get(&event.session_id)
             .cloned()
             .unwrap_or_else(|| {
+                let default_title = match event.source {
+                    SourceKind::Copilot => "Copilot Chat".to_string(),
+                    SourceKind::ClaudeCode => "Claude Code".to_string(),
+                    SourceKind::Codex => "Codex".to_string(),
+                    _ => event.session_id.as_str().to_string(),
+                };
                 SessionSnapshot::new(
                     event.session_id.clone(),
                     event.source.clone(),
-                    event
-                        .title
-                        .clone()
-                        .unwrap_or_else(|| event.session_id.as_str().to_string()),
+                    event.title.clone().unwrap_or(default_title),
                     SessionStatus::Running,
                 )
             });

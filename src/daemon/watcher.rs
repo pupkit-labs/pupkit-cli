@@ -141,8 +141,20 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
     let mut cursors = FileCursors::default();
     let mut tool_tracker = PendingToolTracker::default();
 
+    // Seed session metadata (CWD, title) from first lines before seeking to end.
+    let seed_events = seed_sessions_from_first_lines(&sources);
+
     // On first run, seek all existing files to end so we only see new events.
     initialize_cursors(&sources, &mut cursors);
+
+    // Apply seed events so sessions have proper titles on restart.
+    if !seed_events.is_empty() {
+        if let Ok(mut daemon) = daemon.lock() {
+            for event in seed_events {
+                let _ = daemon.ingest_event(event);
+            }
+        }
+    }
 
     loop {
         thread::sleep(POLL_INTERVAL);
@@ -296,6 +308,32 @@ fn initialize_cursors(sources: &[WatchSource], cursors: &mut FileCursors) {
             }
         }
     }
+}
+
+/// Seed session metadata by reading the first line of each recently-modified
+/// JSONL file. This ensures `session.start` (Copilot) and `session_meta`
+/// (Codex) events set the CWD-derived title even when the daemon restarts
+/// and `initialize_cursors` seeks past them.
+fn seed_sessions_from_first_lines(sources: &[WatchSource]) -> Vec<SessionEvent> {
+    let mut events = Vec::new();
+    let now = current_epoch_secs();
+    for source in sources {
+        let files = find_jsonl_files(&source.root, &source.kind);
+        for path in files {
+            if !is_recently_modified(&path, now) {
+                continue;
+            }
+            if let Ok(file) = File::open(&path) {
+                let reader = BufReader::new(file);
+                if let Some(Ok(first_line)) = reader.lines().next() {
+                    if let Some(event) = parse_line(&first_line, &source.kind, &path) {
+                        events.push(event);
+                    }
+                }
+            }
+        }
+    }
+    events
 }
 
 fn poll_all_sources(
@@ -631,7 +669,6 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
                             SessionId::new(&session_id),
                             SessionEventKind::QuestionRequested,
                         )
-                        .with_title("Copilot Chat")
                         .with_summary(question.clone())
                         .with_payload(SessionEventPayload::QuestionRequest {
                             request_id: RequestId::new(request_id),
@@ -652,7 +689,6 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
                 SessionId::new(&session_id),
                 SessionEventKind::SessionUpdated,
             );
-            event = event.with_title("Copilot Chat");
             event = event.with_occurred_at(occurred_at);
             if let Some(model) = data.get("model").and_then(|m| m.as_str()) {
                 event = event.with_summary(format!("model: {model}"));
@@ -666,7 +702,6 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
                 SessionId::new(&session_id),
                 SessionEventKind::SessionUpdated,
             )
-            .with_title("Copilot Chat")
             .with_occurred_at(occurred_at);
             Some(event)
         }
@@ -1106,7 +1141,32 @@ mod tests {
         let event = parse_copilot_line(&value, path).unwrap();
         assert_eq!(event.kind, SessionEventKind::SessionUpdated);
         assert_eq!(event.session_id.as_str(), "abc-123");
+        // turn_start no longer sets a title — the CWD-derived title from
+        // session.start persists via the registry.
+        assert_eq!(event.title, None);
+    }
+
+    #[test]
+    fn parse_copilot_session_start_extracts_cwd_and_title() {
+        let line = r#"{"type":"session.start","timestamp":"2026-04-01T02:57:21.058Z","data":{"sessionId":"c807f80f","copilotVersion":"1.0.14","startTime":"2026-04-01T02:57:21.032Z","context":{"cwd":"/Users/dev/projects/my-app"}}}"#;
+        let value: Value = serde_json::from_str(line).unwrap();
+        let path = Path::new("/home/.copilot/session-state/c807f80f/events.jsonl");
+        let event = parse_copilot_line(&value, path).unwrap();
+        assert_eq!(event.kind, SessionEventKind::SessionStarted);
+        assert_eq!(event.session_id.as_str(), "c807f80f");
+        assert_eq!(event.title.as_deref(), Some("Copilot · my-app"));
+        assert_eq!(event.cwd.as_deref(), Some("/Users/dev/projects/my-app"));
+    }
+
+    #[test]
+    fn parse_copilot_session_start_without_cwd_uses_fallback_title() {
+        let line = r#"{"type":"session.start","timestamp":"2026-04-01T02:57:21.058Z","data":{"sessionId":"abc"}}"#;
+        let value: Value = serde_json::from_str(line).unwrap();
+        let path = Path::new("/home/.copilot/session-state/abc/events.jsonl");
+        let event = parse_copilot_line(&value, path).unwrap();
+        assert_eq!(event.kind, SessionEventKind::SessionStarted);
         assert_eq!(event.title.as_deref(), Some("Copilot Chat"));
+        assert_eq!(event.cwd, None);
     }
 
     #[test]
