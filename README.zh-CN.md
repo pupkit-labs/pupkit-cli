@@ -22,12 +22,6 @@
 - `pupkit auth` —— GitHub 设备流认证
 - `pupkit update` —— 自更新（macOS 同时更新 PupkitShell）
 
-## 项目文档
-
-除 README 之外的项目文档已经迁移到配套仓库：`git@git.liupx.com:pupkit-labs/pupkit-cli-docs.git`。
-
-当前仓库保留面向用户的 README；设计稿、计划、调研报告、变更记录以及归档文档统一放在 `pupkit-cli-docs` 中。
-
 ## 安装 📦
 
 ### Homebrew
