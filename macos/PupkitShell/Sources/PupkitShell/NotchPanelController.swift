@@ -594,7 +594,7 @@ struct IslandContentView: View {
 
     // MARK: - Usage Strip (flanking notch)
 
-    private static let usageMicro: Font = .system(size: 10, weight: .medium, design: .monospaced)
+    private static let usageMicro: Font = .system(size: 16, weight: .medium, design: .monospaced)
 
     @ViewBuilder
     private func usageStrip(notchWidth: CGFloat, totalWidth: CGFloat) -> some View {
