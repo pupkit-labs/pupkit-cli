@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::daemon::pending::{PendingRequest, PendingStore, PendingWaitHandle};
 use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
+use crate::daemon::tty_inject::CopilotTtyStore;
 use crate::daemon::{DaemonConfig, SessionRegistry, select_top_session};
 use crate::protocol::{
     ApprovalBehavior, AttentionCard, AttentionKind, AttentionSnapshot, CompletionItem,
@@ -16,6 +17,7 @@ pub struct PupkitDaemon {
     registry: SessionRegistry,
     pending: PendingStore,
     completions: Vec<CompletionItem>,
+    copilot_ttys: CopilotTtyStore,
 }
 
 impl PupkitDaemon {
@@ -31,6 +33,7 @@ impl PupkitDaemon {
             registry: SessionRegistry::default(),
             pending: PendingStore::default(),
             completions: Vec::new(),
+            copilot_ttys: CopilotTtyStore::default(),
         };
         if let Err(error) = daemon.restore_state() {
             eprintln!("warning: {error}");
@@ -40,6 +43,10 @@ impl PupkitDaemon {
 
     pub fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    pub fn copilot_ttys_mut(&mut self) -> &mut CopilotTtyStore {
+        &mut self.copilot_ttys
     }
 
     pub fn ingest_event(&mut self, event: SessionEvent) -> Result<(), String> {
@@ -231,9 +238,15 @@ impl PupkitDaemon {
             UiAction::AnswerOption {
                 request_id,
                 option_id,
-            } => self
-                .pending
-                .resolve_answer(&request_id, UserAnswer::Option { option_id }),
+            } => {
+                // Try TTY injection for Copilot sessions before resolving
+                let session_id = self.pending.session_for_request(&request_id);
+                if let Some(sid) = &session_id {
+                    let _ = self.copilot_ttys.inject_answer(sid, &option_id);
+                }
+                self.pending
+                    .resolve_answer(&request_id, UserAnswer::Option { option_id })
+            }
             UiAction::AnswerText { request_id, text } => self
                 .pending
                 .resolve_answer(&request_id, UserAnswer::Text { value: text }),

@@ -126,6 +126,12 @@ impl PendingStore {
         let _ = self.remove(request_id);
     }
 
+    pub fn session_for_request(&self, request_id: &RequestId) -> Option<SessionId> {
+        self.requests
+            .get(request_id)
+            .map(|r| r.session_id.clone())
+    }
+
     pub fn resolve_approval(
         &mut self,
         request_id: &RequestId,

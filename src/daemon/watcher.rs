@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::daemon::PupkitDaemon;
+use crate::daemon::tty_inject;
 use crate::protocol::{
     RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionId, SourceKind,
 };
@@ -80,6 +81,22 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
 
         if let Ok(mut daemon) = daemon.lock() {
             for event in events {
+                // For Copilot QuestionRequested events, discover and register the TTY
+                if event.kind == SessionEventKind::QuestionRequested {
+                    if let SessionEventPayload::QuestionRequest { ref options, .. } = event.payload
+                    {
+                        // Derive session dir from the Copilot root
+                        let copilot_root = home.join(".copilot/session-state");
+                        let session_dir = copilot_root.join(event.session_id.as_str());
+                        if let Some(tty) = tty_inject::discover_tty(&session_dir) {
+                            daemon.copilot_ttys_mut().set(
+                                event.session_id.clone(),
+                                tty,
+                                options.clone(),
+                            );
+                        }
+                    }
+                }
                 let _ = daemon.ingest_event(event);
             }
         }
