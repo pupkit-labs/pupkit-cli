@@ -324,10 +324,14 @@ fn initialize_cursors(sources: &[WatchSource], cursors: &mut FileCursors) {
 }
 
 /// Seed session metadata by reading the first line of each recently-modified
-/// JSONL file. This ensures `session.start` (Copilot) and `session_meta`
-/// (Codex) events set the CWD-derived title even when the daemon restarts
-/// and `initialize_cursors` seeks past them.
+/// JSONL file. This ensures `session.start` (Copilot), `session_meta` (Codex),
+/// and early `user` events (Claude Code) set the CWD-derived title even when the
+/// daemon restarts and `initialize_cursors` seeks past them.
+///
+/// Reads up to 5 lines per file to find the first parseable event with CWD info
+/// (Claude Code's first line is often `file-history-snapshot` with no CWD).
 fn seed_sessions_from_first_lines(sources: &[WatchSource]) -> Vec<SessionEvent> {
+    const MAX_SEED_LINES: usize = 5;
     let mut events = Vec::new();
     let now = current_epoch_secs();
     for source in sources {
@@ -338,9 +342,13 @@ fn seed_sessions_from_first_lines(sources: &[WatchSource]) -> Vec<SessionEvent> 
             }
             if let Ok(file) = File::open(&path) {
                 let reader = BufReader::new(file);
-                if let Some(Ok(first_line)) = reader.lines().next() {
-                    if let Some(event) = parse_line(&first_line, &source.kind, &path) {
+                for line in reader.lines().take(MAX_SEED_LINES).flatten() {
+                    if let Some(event) = parse_line(&line, &source.kind, &path) {
+                        let has_cwd = event.cwd.is_some();
                         events.push(event);
+                        if has_cwd {
+                            break;
+                        }
                     }
                 }
             }

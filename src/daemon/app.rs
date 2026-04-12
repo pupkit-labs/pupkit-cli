@@ -92,7 +92,19 @@ impl PupkitDaemon {
             snapshot.title = title;
         }
         if let Some(cwd) = event.cwd.clone() {
-            snapshot.cwd = Some(cwd);
+            snapshot.cwd = Some(cwd.clone());
+            // Auto-derive project-aware title from CWD when title lacks folder context
+            if let Some(folder) = cwd.rsplit('/').next().filter(|s| !s.is_empty()) {
+                let prefix = match event.source {
+                    SourceKind::Copilot => "Copilot",
+                    SourceKind::ClaudeCode => "Claude Code",
+                    SourceKind::Codex => "Codex",
+                    _ => "",
+                };
+                if !prefix.is_empty() && !snapshot.title.contains('·') {
+                    snapshot.title = format!("{prefix} · {folder}");
+                }
+            }
         }
         snapshot.last_updated_at = if event.occurred_at == 0 {
             current_unix_timestamp()
@@ -546,5 +558,69 @@ mod tests {
             snapshot.sessions[0].status,
             crate::protocol::SessionStatus::Stale
         );
+    }
+
+    #[test]
+    fn cwd_derives_project_title_for_all_sources() {
+        let mut daemon = PupkitDaemon::for_config(temp_config("cwd-title"));
+        // Copilot session with default title + CWD → "Copilot · my-app"
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::Copilot,
+                    SessionId::new("cp-1"),
+                    SessionEventKind::SessionUpdated,
+                )
+                .with_cwd("/home/dev/projects/my-app".to_string()),
+            )
+            .unwrap();
+        // Claude Code session with default title + CWD → "Claude Code · lang_learn"
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::ClaudeCode,
+                    SessionId::new("cc-1"),
+                    SessionEventKind::SessionUpdated,
+                )
+                .with_cwd("/Users/dev/git/lang_learn".to_string()),
+            )
+            .unwrap();
+        // Codex session with default title + CWD → "Codex · tasks"
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::Codex,
+                    SessionId::new("cx-1"),
+                    SessionEventKind::SessionUpdated,
+                )
+                .with_cwd("/tmp/tasks".to_string()),
+            )
+            .unwrap();
+
+        let snap = daemon.state_snapshot();
+        let titles: Vec<_> = snap.sessions.iter().map(|s| s.title.as_str()).collect();
+        assert!(titles.contains(&"Copilot · my-app"), "got: {titles:?}");
+        assert!(titles.contains(&"Claude Code · lang_learn"), "got: {titles:?}");
+        assert!(titles.contains(&"Codex · tasks"), "got: {titles:?}");
+    }
+
+    #[test]
+    fn explicit_title_preserved_over_cwd_derivation() {
+        let mut daemon = PupkitDaemon::for_config(temp_config("cwd-explicit"));
+        // Session with explicit title containing · should not be overwritten
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::Copilot,
+                    SessionId::new("cp-2"),
+                    SessionEventKind::SessionStarted,
+                )
+                .with_title("Copilot · custom-name".to_string())
+                .with_cwd("/home/dev/other-dir".to_string()),
+            )
+            .unwrap();
+
+        let snap = daemon.state_snapshot();
+        assert_eq!(snap.sessions[0].title, "Copilot · custom-name");
     }
 }
