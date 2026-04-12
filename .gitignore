@@ -5,3 +5,4 @@
 !/.github/workflows/release.yml
 macos/PupkitShell/.build/
 nohup.out
+*.DS_Store

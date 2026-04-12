@@ -533,6 +533,12 @@ struct IslandContentView: View {
             }
             .frame(width: currentWidth, height: currentHeight, alignment: .top)
         }
+        .overlay(alignment: .top) {
+            if !isOpened {
+                usageStrip(notchWidth: closedWidth, totalWidth: layoutWidth)
+                    .frame(height: closedNotchHeight)
+            }
+        }
         .scaleEffect(isOpened ? 1 : (isHovering ? IslandMetrics.closedHoverScale : 1), anchor: .top)
         .padding(.horizontal, insetH)
         .padding(.bottom, insetB)
@@ -584,6 +590,79 @@ struct IslandContentView: View {
             }
             .padding(.horizontal, 8)
         }
+    }
+
+    // MARK: - Usage Strip (flanking notch)
+
+    private static let usageMicro: Font = .system(size: 10, weight: .medium, design: .monospaced)
+
+    @ViewBuilder
+    private func usageStrip(notchWidth: CGFloat, totalWidth: CGFloat) -> some View {
+        let usage = snapshot?.usage
+        let flankWidth = max(0, (totalWidth - notchWidth) / 2 - 8)
+
+        HStack(spacing: 0) {
+            // Left flank: Claude Code usage
+            HStack(spacing: 6) {
+                if let tokens7d = usage?.claude_7d_tokens {
+                    HStack(spacing: 2) {
+                        Text("CC")
+                            .foregroundStyle(Self.toolTabs[0].color.opacity(0.7))
+                        Text(Self.formatTokens(tokens7d))
+                            .foregroundStyle(.white.opacity(0.50))
+                    }
+                }
+            }
+            .font(Self.usageMicro)
+            .frame(width: flankWidth, alignment: .trailing)
+            .padding(.trailing, 6)
+
+            Spacer()
+                .frame(width: notchWidth)
+
+            // Right flank: Codex + Copilot
+            HStack(spacing: 6) {
+                if let pct5h = usage?.codex_5h_remaining_pct {
+                    HStack(spacing: 2) {
+                        Text("CX")
+                            .foregroundStyle(Self.toolTabs[1].color.opacity(0.7))
+                        Text("\(pct5h)%")
+                            .foregroundStyle(.white.opacity(0.50))
+                    }
+                }
+                if let pctX10 = usage?.copilot_premium_remaining_pct_x10 {
+                    HStack(spacing: 2) {
+                        Text("CP")
+                            .foregroundStyle(Self.toolTabs[2].color.opacity(0.7))
+                        Text(Self.formatPctX10(pctX10))
+                            .foregroundStyle(.white.opacity(0.50))
+                    }
+                }
+            }
+            .font(Self.usageMicro)
+            .frame(width: flankWidth, alignment: .leading)
+            .padding(.leading, 6)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private static func formatTokens(_ tokens: UInt64) -> String {
+        if tokens >= 1_000_000 {
+            let m = Double(tokens) / 1_000_000.0
+            return String(format: "%.1fM", m)
+        } else if tokens >= 1_000 {
+            let k = Double(tokens) / 1_000.0
+            return String(format: "%.0fK", k)
+        }
+        return "\(tokens)"
+    }
+
+    private static func formatPctX10(_ value: UInt64) -> String {
+        let pct = Double(value) / 10.0
+        if pct == pct.rounded() {
+            return String(format: "%.0f%%", pct)
+        }
+        return String(format: "%.1f%%", pct)
     }
 
     // MARK: - Tool Tabs

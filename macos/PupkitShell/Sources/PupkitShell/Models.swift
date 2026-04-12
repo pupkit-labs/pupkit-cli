@@ -41,6 +41,15 @@ struct UiStateSnapshot: Decodable {
     let attentions: [AttentionCard]
     let sessions: [SessionListItem]
     let recent_completions: [CompletionItem]
+    let usage: UsageCompact?
+}
+
+struct UsageCompact: Decodable {
+    let claude_24h_tokens: UInt64?
+    let claude_7d_tokens: UInt64?
+    let codex_5h_remaining_pct: UInt8?
+    let codex_7d_remaining_pct: UInt8?
+    let copilot_premium_remaining_pct_x10: UInt64?
 }
 
 // MARK: - UiAction (Encodable, sent to daemon)

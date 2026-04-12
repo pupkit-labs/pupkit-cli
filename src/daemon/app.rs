@@ -10,7 +10,7 @@ use crate::daemon::{DaemonConfig, SessionRegistry, collect_attention_sessions, s
 use crate::protocol::{
     ApprovalBehavior, AttentionCard, AttentionKind, AttentionSnapshot, CompletionItem,
     HookDecision, RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionListItem,
-    SessionSnapshot, SessionStatus, SourceKind, UiAction, UiStateSnapshot, UserAnswer,
+    SessionSnapshot, SessionStatus, SourceKind, UiAction, UiStateSnapshot, UsageCompact, UserAnswer,
 };
 
 #[derive(Debug)]
@@ -20,6 +20,7 @@ pub struct PupkitDaemon {
     pending: PendingStore,
     completions: Vec<CompletionItem>,
     copilot_ttys: CopilotTtyStore,
+    usage: Option<UsageCompact>,
 }
 
 impl PupkitDaemon {
@@ -36,6 +37,7 @@ impl PupkitDaemon {
             pending: PendingStore::default(),
             completions: Vec::new(),
             copilot_ttys: CopilotTtyStore::default(),
+            usage: None,
         };
         if let Err(error) = daemon.restore_state() {
             log_warn!("{error}");
@@ -49,6 +51,10 @@ impl PupkitDaemon {
 
     pub fn copilot_ttys_mut(&mut self) -> &mut CopilotTtyStore {
         &mut self.copilot_ttys
+    }
+
+    pub fn update_usage(&mut self, usage: UsageCompact) {
+        self.usage = Some(usage);
     }
 
     pub fn ingest_event(&mut self, event: SessionEvent) -> Result<(), String> {
@@ -382,6 +388,7 @@ impl PupkitDaemon {
             attentions,
             sessions,
             recent_completions: self.completions.clone(),
+            usage: self.usage.clone(),
         }
     }
 

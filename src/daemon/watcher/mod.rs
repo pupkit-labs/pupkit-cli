@@ -18,6 +18,7 @@ use crate::daemon::PupkitDaemon;
 use crate::daemon::tty_inject;
 use crate::protocol::{
     RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionId, SourceKind,
+    UsageCompact,
 };
 
 use claude::{parse_claude_line, track_claude_tool_calls};
@@ -27,6 +28,8 @@ use copilot::{parse_copilot_line, track_copilot_tool_calls};
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Only process files modified within this window (avoids scanning ancient history).
 const MAX_FILE_AGE_SECS: u64 = 24 * 60 * 60;
+/// Refresh usage metrics every N poll cycles (~60s at 5s interval).
+const USAGE_REFRESH_CYCLES: u64 = 12;
 
 // MARK: - Watch sources
 
@@ -153,6 +156,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
     let sources = discover_sources(&home);
     let mut cursors = FileCursors::default();
     let mut tool_tracker = PendingToolTracker::default();
+    let mut usage_cycle: u64 = 0;
 
     // Seed session metadata (CWD, title) from first lines before seeking to end.
     let seed_events = seed_sessions_from_first_lines(&sources);
@@ -169,8 +173,22 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
         }
     }
 
+    // Initial usage snapshot
+    if let Ok(mut daemon) = daemon.lock() {
+        daemon.update_usage(collect_usage_compact());
+    }
+
     loop {
         thread::sleep(POLL_INTERVAL);
+        usage_cycle += 1;
+
+        // Periodic usage refresh
+        if usage_cycle % USAGE_REFRESH_CYCLES == 0 {
+            let usage = collect_usage_compact();
+            if let Ok(mut daemon) = daemon.lock() {
+                daemon.update_usage(usage);
+            }
+        }
 
         let events = poll_all_sources(&sources, &mut cursors, &mut tool_tracker);
 
@@ -310,6 +328,44 @@ fn discover_sources(home: &Path) -> Vec<WatchSource> {
     }
 
     sources
+}
+
+/// Collect compact usage metrics from all three AI tools.
+/// Runs synchronously — called periodically from the watcher loop.
+fn collect_usage_compact() -> UsageCompact {
+    use crate::collectors::ai_usage::collect_ai_usage_summary;
+    use crate::collectors::copilot::{collect_copilot_usage_summary_fast, finish_copilot_usage_summary};
+
+    let ai_usage = collect_ai_usage_summary();
+
+    let claude_24h = if ai_usage.claude.last_24h.total_tokens > 0 {
+        Some(ai_usage.claude.last_24h.total_tokens)
+    } else {
+        None
+    };
+    let claude_7d = if ai_usage.claude.last_7d.total_tokens > 0 {
+        Some(ai_usage.claude.last_7d.total_tokens)
+    } else {
+        None
+    };
+
+    let codex_5h = ai_usage.codex.primary_rate_limit.used_percent.map(|u| 100u8.saturating_sub(u));
+    let codex_7d = ai_usage.codex.secondary_rate_limit.used_percent.map(|u| 100u8.saturating_sub(u));
+
+    // Full copilot collection includes the GitHub API quota fetch (5s curl timeout)
+    let copilot = finish_copilot_usage_summary(collect_copilot_usage_summary_fast());
+    let copilot_premium = copilot
+        .quota
+        .as_ref()
+        .map(|q| q.premium.percent_remaining_x10);
+
+    UsageCompact {
+        claude_24h_tokens: claude_24h,
+        claude_7d_tokens: claude_7d,
+        codex_5h_remaining_pct: codex_5h,
+        codex_7d_remaining_pct: codex_7d,
+        copilot_premium_remaining_pct_x10: copilot_premium,
+    }
 }
 
 fn initialize_cursors(sources: &[WatchSource], cursors: &mut FileCursors) {
