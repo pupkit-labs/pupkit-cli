@@ -511,11 +511,10 @@ fn parse_codex_line(value: &Value, path: &Path) -> Option<SessionEvent> {
     match line_type {
         "session_meta" => {
             let payload = value.get("payload")?;
-            let session_id = payload
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| session_id_from_path(path));
+            // Always use filename-based session_id so all events from the same
+            // file share the same ID (event_msg and track_codex_tool_calls
+            // already use session_id_from_path).
+            let session_id = session_id_from_path(path);
             let cwd = payload
                 .get("cwd")
                 .and_then(|v| v.as_str())
@@ -1077,7 +1076,8 @@ mod tests {
         let value: Value = serde_json::from_str(line).unwrap();
         let event = parse_codex_line(&value, Path::new("test.jsonl")).unwrap();
         assert_eq!(event.kind, SessionEventKind::SessionStarted);
-        assert_eq!(event.session_id.as_str(), "codex-sess-1");
+        // session_id comes from the filename, not payload.id
+        assert_eq!(event.session_id.as_str(), "test");
         assert_eq!(event.cwd.as_deref(), Some("/tmp/project"));
         assert!(event.title.unwrap().contains("Codex"));
     }
