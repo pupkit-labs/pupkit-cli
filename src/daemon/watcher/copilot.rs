@@ -121,8 +121,14 @@ pub(super) fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEv
 
 /// Track Copilot tool calls for approval detection.
 ///
-/// Records tool requests from `assistant.message` for approval-needing tools,
-/// and marks them as started when `tool.execution_start` is seen.
+/// Copilot CLI writes `assistant.message` and `tool.execution_start` at the same
+/// instant, but the actual approval prompt happens between `tool.execution_start`
+/// and `tool.execution_complete`. So we track START→COMPLETE gaps:
+///
+/// - Record pending on `tool.execution_start` for approval-relevant tools
+/// - Clear on `tool.execution_complete`
+/// - If a tool call survives 2 poll cycles without completion, it's likely
+///   waiting for user approval
 pub(super) fn track_copilot_tool_calls(
     value: &Value,
     path: &Path,
@@ -136,47 +142,43 @@ pub(super) fn track_copilot_tool_calls(
     let session_id = session_id_from_copilot_path(path);
 
     match line_type {
-        "assistant.message" => {
+        "tool.execution_start" => {
             let data = match value.get("data") {
                 Some(d) => d,
                 None => return,
             };
-            if let Some(trs) = data.get("toolRequests").and_then(|v| v.as_array()) {
-                for tr in trs {
-                    let tool_name = match tr.get("name").and_then(|n| n.as_str()) {
-                        Some(n) => n,
-                        None => continue,
-                    };
-                    if !APPROVAL_TOOLS.contains(&tool_name) {
-                        continue;
-                    }
-                    let tool_call_id = match tr.get("toolCallId").and_then(|v| v.as_str()) {
-                        Some(id) => id.to_string(),
-                        None => continue,
-                    };
-                    let summary = tr
-                        .get("arguments")
-                        .and_then(|a| {
-                            a.get("command")
-                                .or_else(|| a.get("path"))
-                                .or_else(|| a.get("file_text"))
-                        })
-                        .and_then(|v| v.as_str())
-                        .map(|s| truncate_summary(s))
-                        .unwrap_or_else(|| tool_name.to_string());
-
-                    tracker.record_requested(
-                        tool_call_id,
-                        session_id.clone(),
-                        SourceKind::Copilot,
-                        tool_name.to_string(),
-                        summary,
-                        None,
-                    );
-                }
+            let tool_name = match data.get("toolName").and_then(|n| n.as_str()) {
+                Some(n) => n,
+                None => return,
+            };
+            if !APPROVAL_TOOLS.contains(&tool_name) {
+                return;
             }
+            let tool_call_id = match data.get("toolCallId").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => return,
+            };
+            let summary = data
+                .get("arguments")
+                .and_then(|a| {
+                    a.get("command")
+                        .or_else(|| a.get("path"))
+                        .or_else(|| a.get("file_text"))
+                })
+                .and_then(|v| v.as_str())
+                .map(|s| truncate_summary(s))
+                .unwrap_or_else(|| tool_name.to_string());
+
+            tracker.record_requested(
+                tool_call_id,
+                session_id,
+                SourceKind::Copilot,
+                tool_name.to_string(),
+                summary,
+                Some(path.to_path_buf()),
+            );
         }
-        "tool.execution_start" => {
+        "tool.execution_complete" => {
             if let Some(tool_call_id) = value
                 .get("data")
                 .and_then(|d| d.get("toolCallId"))
@@ -291,5 +293,107 @@ mod tests {
         let path = Path::new("/home/.copilot/session-state/sess-1/events.jsonl");
         let event = parse_copilot_line(&value, path).expect("should parse turn_start");
         assert_eq!(event.source, SourceKind::Copilot);
+    }
+
+    // --- Copilot tool call tracking (START→COMPLETE) ---
+
+    #[test]
+    fn copilot_execution_start_records_pending_and_complete_clears() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.copilot/session-state/tool-sess/events.jsonl");
+
+        let start_json = r#"{
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "arguments": { "command": "cargo test" }
+            }
+        }"#;
+        let value: Value = serde_json::from_str(start_json).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+        assert!(tracker.pending.contains_key("call-1"));
+        assert_eq!(tracker.pending["call-1"].source, SourceKind::Copilot);
+        assert!(tracker.pending["call-1"].summary.contains("cargo test"));
+
+        let complete_json = r#"{
+            "type": "tool.execution_complete",
+            "data": {
+                "toolCallId": "call-1"
+            }
+        }"#;
+        let value: Value = serde_json::from_str(complete_json).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn copilot_non_approval_tool_is_not_tracked() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.copilot/session-state/t-sess/events.jsonl");
+
+        // read_bash is NOT in APPROVAL_TOOLS
+        let json = r#"{
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "call-read",
+                "toolName": "read_bash",
+                "arguments": {}
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+    }
+
+    #[test]
+    fn copilot_stale_execution_becomes_approval() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.copilot/session-state/stale-sess/events.jsonl");
+
+        let json = r#"{
+            "type": "tool.execution_start",
+            "data": {
+                "toolCallId": "call-stale",
+                "toolName": "bash",
+                "arguments": { "command": "rm -rf /tmp/demo.txt" }
+            }
+        }"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+
+        // First advance: just seen, not yet stale
+        let approvals = tracker.advance_poll();
+        assert!(approvals.is_empty());
+
+        // Second advance: stale → approval emitted
+        let approvals = tracker.advance_poll();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].1, SourceKind::Copilot);
+        assert_eq!(approvals[0].2, "bash");
+        assert!(approvals[0].3.contains("rm -rf"));
+    }
+
+    #[test]
+    fn copilot_quick_complete_prevents_approval() {
+        let mut tracker = PendingToolTracker::default();
+        let path = Path::new("/home/.copilot/session-state/quick-sess/events.jsonl");
+
+        // Tool starts
+        let start = r#"{"type":"tool.execution_start","data":{"toolCallId":"call-q","toolName":"bash","arguments":{"command":"echo hi"}}}"#;
+        let value: Value = serde_json::from_str(start).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 1);
+
+        // Tool completes before next poll
+        let complete = r#"{"type":"tool.execution_complete","data":{"toolCallId":"call-q"}}"#;
+        let value: Value = serde_json::from_str(complete).unwrap();
+        track_copilot_tool_calls(&value, path, &mut tracker);
+        assert_eq!(tracker.pending.len(), 0);
+
+        // Advance poll — no approvals since it was already cleared
+        let approvals = tracker.advance_poll();
+        assert!(approvals.is_empty());
     }
 }
