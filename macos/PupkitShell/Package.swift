@@ -11,6 +11,7 @@ let package = Package(
         .executableTarget(
             name: "PupkitShell",
             path: "Sources/PupkitShell",
+            resources: [.process("Resources")],
             swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         )
     ]

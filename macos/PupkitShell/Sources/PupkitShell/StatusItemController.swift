@@ -12,7 +12,16 @@ final class StatusItemController: NSObject {
         self.notchController = notchController
         self.ipcClient = ipcClient
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "🐶 Pupkit"
+        if let logoURL = Bundle.module.url(forResource: "pupkit_logo", withExtension: "png"),
+           let img = NSImage(contentsOf: logoURL) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            item.button?.image = img
+            item.button?.imagePosition = .imageLeading
+            item.button?.title = " Pupkit"
+        } else {
+            item.button?.title = "Pupkit"
+        }
         item.button?.toolTip = "Pupkit Shell"
         item.menu = menu
         statusItem = item
@@ -22,7 +31,11 @@ final class StatusItemController: NSObject {
     func apply(snapshot: UiStateSnapshot) {
         latestSnapshot = snapshot
         let attentionCount = snapshot.attentions.count
-        statusItem?.button?.title = attentionCount > 0 ? "🐶(\(attentionCount))" : "🐶"
+        if attentionCount > 0 {
+            statusItem?.button?.title = " (\(attentionCount))"
+        } else {
+            statusItem?.button?.title = ""
+        }
         rebuildMenu(errorMessage: nil)
     }
 

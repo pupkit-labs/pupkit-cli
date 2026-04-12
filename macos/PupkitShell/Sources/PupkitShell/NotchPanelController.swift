@@ -698,6 +698,92 @@ struct IslandContentView: View {
         ("Copilot",    "Copilot",    Color(red: 0.65, green: 0.45, blue: 0.95)),  // lighter purple
     ]
 
+    // MARK: - Pixel Art Tool Logos (faithful 2× sub-character decomposition)
+    //
+    // Each block/box character → 2×2 sub-pixels based on Unicode quadrant definitions.
+    // Rendered with px_w=1pt, px_h=targetH/rows to normalize all icons to 12pt tall.
+
+    // Claude Code (from ASCII art):
+    //  ▐▛███▜▌     padded to 9 chars
+    // ▝▜█████▛▘
+    //   ▘▘ ▝▝
+    // 2× decomposition: 18 cols × 6 rows (including empty bottom row)
+    private static let claudePixels: [[UInt8]] = [
+        [0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0],  // row0 top: ' ','▐','▛','█','█','█','▜','▌',' '
+        [0,0,0,1,1,0,1,1,1,1,1,1,0,1,1,0,0,0],  // row0 bot
+        [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0],  // row1 top: '▝','▜','█','█','█','█','█','▛','▘'
+        [0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0],  // row1 bot
+        [0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0],  // row2 top: ' ',' ','▘','▘',' ','▝','▝',' ',' '
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],  // row2 bot (empty)
+    ]
+
+    // Codex (from ASCII art): >_ Codex → hand-designed >_ at 2px stroke
+    // 10 cols × 8 rows
+    private static let codexPixels: [[UInt8]] = [
+        [1,1,0,0,0,0,0,0,0,0],
+        [0,1,1,0,0,0,0,0,0,0],
+        [0,0,1,1,0,0,0,0,0,0],
+        [0,0,0,1,1,0,0,0,0,0],
+        [0,0,1,1,0,0,0,0,0,0],
+        [0,1,1,0,0,0,0,0,0,0],
+        [1,1,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,1,1,1,1,1],
+    ]
+
+    // Copilot (from ASCII art):
+    // ╭─╮╭─╮  box-drawing top edges → sub-pixel line positions
+    // ╰─╯╰─╯  box-drawing bottom edges
+    // █ ▘▝ █  block chars
+    //  ▔▔▔▔   upper bar
+    // 2× decomposition: 12 cols × 8 rows (preserving empty rows for spacing)
+    private static let copilotPixels: [[UInt8]] = [
+        [0,0,0,0,0,0,0,0,0,0,0,0],  // row0 top (box-drawing thin top)
+        [0,1,1,1,1,0,0,1,1,1,1,0],  // row0 bot (╭─╮╭─╮ lower half)
+        [0,1,1,1,1,0,0,1,1,1,1,0],  // row1 top (╰─╯╰─╯ upper half)
+        [0,0,0,0,0,0,0,0,0,0,0,0],  // row1 bot (box-drawing thin bottom)
+        [1,1,0,0,1,0,0,1,0,0,1,1],  // row2 top (█ ▘▝ █)
+        [1,1,0,0,0,0,0,0,0,0,1,1],  // row2 bot
+        [0,0,1,1,1,1,1,1,1,1,0,0],  // row3 top ( ▔▔▔▔ )
+        [0,0,0,0,0,0,0,0,0,0,0,0],  // row3 bot (empty)
+    ]
+
+    private static let toolPixelMap: [String: [[UInt8]]] = [
+        "ClaudeCode": claudePixels,
+        "Codex": codexPixels,
+        "Copilot": copilotPixels,
+    ]
+
+    @ViewBuilder
+    private static func toolIcon(for key: String, color: Color, isSelected: Bool) -> some View {
+        let baseOpacity = isSelected ? 0.85 : 0.35
+        if let pixels = toolPixelMap[key] {
+            let rows = pixels.count
+            let cols = pixels.map(\.count).max() ?? 1
+            let targetH: CGFloat = 12
+            let pxW: CGFloat = 1.0
+            let pxH: CGFloat = targetH / CGFloat(rows)
+
+            Canvas { context, _ in
+                for r in 0..<rows {
+                    for c in 0..<pixels[r].count where pixels[r][c] > 0 {
+                        let rect = CGRect(
+                            x: CGFloat(c) * pxW,
+                            y: CGFloat(r) * pxH,
+                            width: pxW,
+                            height: pxH
+                        )
+                        context.fill(Path(rect), with: .color(color.opacity(baseOpacity)))
+                    }
+                }
+            }
+            .frame(width: CGFloat(cols) * pxW, height: targetH)
+        } else {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color.opacity(baseOpacity))
+                .frame(width: 12, height: 12)
+        }
+    }
+
     private static let mono: Font = .system(size: 14, weight: .regular, design: .monospaced)
     private static let monoSmall: Font = .system(size: 13, weight: .regular, design: .monospaced)
     private static let monoBold: Font = .system(size: 14, weight: .medium, design: .monospaced)
@@ -753,9 +839,7 @@ struct IslandContentView: View {
     @ViewBuilder
     private func tabButton(tag: String, isSelected: Bool, badgeCount: Int, accentColor: Color = .white, action: @escaping () -> Void) -> some View {
         HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(accentColor.opacity(isSelected ? 0.85 : 0.35))
-                .frame(width: 12, height: 12)
+            Self.toolIcon(for: tag, color: accentColor, isSelected: isSelected)
             Text(tag)
                 .font(Self.mono)
                 .foregroundStyle(isSelected ? .white.opacity(0.9) : .white.opacity(0.30))
