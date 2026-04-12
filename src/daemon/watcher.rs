@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::daemon::PupkitDaemon;
 use crate::protocol::{
-    SessionEvent, SessionEventKind, SessionId, SourceKind,
+    RequestId, SessionEvent, SessionEventKind, SessionEventPayload, SessionId, SourceKind,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -387,31 +387,82 @@ fn parse_codex_line(value: &Value, path: &Path) -> Option<SessionEvent> {
 /// Copilot has types: assistant.message, assistant.turn_start, tool.execution_start, etc.
 /// We generate:
 /// - `assistant.turn_start` → SessionUpdated
+/// - `assistant.message` with `ask_user` tool → QuestionRequested
+/// - `assistant.message` (other) → SessionUpdated
 fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
     let line_type = value.get("type")?.as_str()?;
     let occurred_at = extract_timestamp(value);
 
     match line_type {
-        "assistant.turn_start" | "assistant.message" => {
+        "assistant.message" => {
             let session_id = session_id_from_copilot_path(path);
+            let data = value.get("data")?;
+
+            // Check for ask_user tool calls → QuestionRequested
+            if let Some(tool_requests) = data.get("toolRequests").and_then(|v| v.as_array()) {
+                for tr in tool_requests {
+                    if tr.get("name").and_then(|n| n.as_str()) == Some("ask_user") {
+                        let args = tr.get("arguments").unwrap_or(&Value::Null);
+                        let question = args
+                            .get("question")
+                            .and_then(|q| q.as_str())
+                            .unwrap_or("Question")
+                            .to_string();
+                        let choices: Vec<String> = args
+                            .get("choices")
+                            .and_then(|c| c.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let request_id = tr
+                            .get("toolCallId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("copilot-ask");
+
+                        let event = SessionEvent::new(
+                            SourceKind::Unknown,
+                            SessionId::new(&session_id),
+                            SessionEventKind::QuestionRequested,
+                        )
+                        .with_title("Copilot Chat")
+                        .with_summary(question.clone())
+                        .with_payload(SessionEventPayload::QuestionRequest {
+                            request_id: RequestId::new(request_id),
+                            prompt: question,
+                            options: choices,
+                        })
+                        .with_occurred_at(occurred_at);
+
+                        return Some(event);
+                    }
+                }
+            }
+
+            // Regular assistant message → SessionUpdated
             let mut event = SessionEvent::new(
-                SourceKind::Unknown, // No CopilotChat variant in SourceKind
+                SourceKind::Unknown,
                 SessionId::new(&session_id),
                 SessionEventKind::SessionUpdated,
             );
             event = event.with_title("Copilot Chat");
             event = event.with_occurred_at(occurred_at);
-
-            if line_type == "assistant.message" {
-                if let Some(model) = value
-                    .get("data")
-                    .and_then(|d| d.get("model"))
-                    .and_then(|m| m.as_str())
-                {
-                    event = event.with_summary(format!("model: {model}"));
-                }
+            if let Some(model) = data.get("model").and_then(|m| m.as_str()) {
+                event = event.with_summary(format!("model: {model}"));
             }
-
+            Some(event)
+        }
+        "assistant.turn_start" => {
+            let session_id = session_id_from_copilot_path(path);
+            let event = SessionEvent::new(
+                SourceKind::Unknown,
+                SessionId::new(&session_id),
+                SessionEventKind::SessionUpdated,
+            )
+            .with_title("Copilot Chat")
+            .with_occurred_at(occurred_at);
             Some(event)
         }
         _ => None,
@@ -612,6 +663,28 @@ mod tests {
         let path = Path::new("/copilot/session-state/sess-x/events.jsonl");
         let event = parse_copilot_line(&value, path).unwrap();
         assert!(event.summary.unwrap().contains("claude-sonnet-4.6"));
+    }
+
+    #[test]
+    fn parse_copilot_ask_user_produces_question_requested() {
+        let line = r#"{"type":"assistant.message","timestamp":"2026-03-20T07:35:00.000Z","data":{"toolRequests":[{"name":"ask_user","toolCallId":"call-123","arguments":{"question":"Which database?","choices":["PostgreSQL","MySQL","SQLite"]}}]}}"#;
+        let value: Value = serde_json::from_str(line).unwrap();
+        let path = Path::new("/copilot/session-state/sess-ask/events.jsonl");
+        let event = parse_copilot_line(&value, path).unwrap();
+        assert_eq!(event.kind, SessionEventKind::QuestionRequested);
+        assert_eq!(event.session_id.as_str(), "sess-ask");
+        if let SessionEventPayload::QuestionRequest {
+            request_id,
+            prompt,
+            options,
+        } = &event.payload
+        {
+            assert_eq!(request_id.as_str(), "call-123");
+            assert_eq!(prompt, "Which database?");
+            assert_eq!(options, &["PostgreSQL", "MySQL", "SQLite"]);
+        } else {
+            panic!("expected QuestionRequest payload");
+        }
     }
 
     #[test]
