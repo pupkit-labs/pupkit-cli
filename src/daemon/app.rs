@@ -227,17 +227,40 @@ impl PupkitDaemon {
 
     pub fn apply_ui_action(&mut self, action: UiAction) -> Result<Option<HookDecision>, String> {
         let decision = match action {
-            UiAction::Approve { request_id, always } => self.pending.resolve_approval(
-                &request_id,
-                if always {
-                    ApprovalBehavior::AllowAlways
-                } else {
-                    ApprovalBehavior::Allow
-                },
-            ),
-            UiAction::Deny { request_id } => self
-                .pending
-                .resolve_approval(&request_id, ApprovalBehavior::Deny),
+            UiAction::Approve { request_id, always } => {
+                // TTY injection for Copilot tool approvals
+                let session_id = self.pending.session_for_request(&request_id);
+                if let Some(sid) = &session_id {
+                    // For Copilot, "approve" = select first option (Allow)
+                    match self.copilot_ttys.inject_answer(sid, "allow") {
+                        Ok(true) => eprintln!("[tty] injected approval for session {}", sid.as_str()),
+                        Ok(false) => {}
+                        Err(e) => eprintln!("[tty] approval injection failed: {e}"),
+                    }
+                }
+                self.pending.resolve_approval(
+                    &request_id,
+                    if always {
+                        ApprovalBehavior::AllowAlways
+                    } else {
+                        ApprovalBehavior::Allow
+                    },
+                )
+            }
+            UiAction::Deny { request_id } => {
+                // TTY injection for Copilot tool denials
+                let session_id = self.pending.session_for_request(&request_id);
+                if let Some(sid) = &session_id {
+                    // For Copilot, "deny" = select second option (index 1)
+                    match self.copilot_ttys.inject_answer(sid, "deny") {
+                        Ok(true) => eprintln!("[tty] injected denial for session {}", sid.as_str()),
+                        Ok(false) => {}
+                        Err(e) => eprintln!("[tty] denial injection failed: {e}"),
+                    }
+                }
+                self.pending
+                    .resolve_approval(&request_id, ApprovalBehavior::Deny)
+            }
             UiAction::AnswerOption {
                 request_id,
                 option_id,

@@ -55,6 +55,73 @@ impl FileCursors {
     }
 }
 
+// MARK: - Pending tool call tracker (Copilot approval detection)
+
+/// Tools that typically require user approval in Copilot CLI.
+const APPROVAL_TOOLS: &[&str] = &[
+    "bash", "edit", "create", "write_bash", "stop_bash",
+];
+
+/// Tracks tool calls from `assistant.message` that haven't been started yet.
+/// If a tool call persists across two poll cycles, we emit an ApprovalRequested event.
+#[derive(Default)]
+struct PendingToolTracker {
+    /// tool_call_id → (session_id, tool_name, command_summary, first_seen_poll)
+    pending: HashMap<String, PendingToolCall>,
+    poll_count: u64,
+}
+
+struct PendingToolCall {
+    session_id: String,
+    tool_name: String,
+    summary: String,
+    first_seen_poll: u64,
+}
+
+impl PendingToolTracker {
+    /// Record tool calls from an assistant.message event.
+    fn record_requested(&mut self, tool_call_id: String, session_id: String, tool_name: String, summary: String) {
+        self.pending.entry(tool_call_id).or_insert(PendingToolCall {
+            session_id,
+            tool_name,
+            summary,
+            first_seen_poll: self.poll_count,
+        });
+    }
+
+    /// Mark a tool call as started (removes from pending).
+    fn mark_started(&mut self, tool_call_id: &str) {
+        self.pending.remove(tool_call_id);
+    }
+
+    /// Advance the poll counter and return approval events for tool calls
+    /// that have been pending since the previous poll (survived one full cycle).
+    fn advance_poll(&mut self) -> Vec<(String, String, String)> {
+        self.poll_count += 1;
+        let cutoff = self.poll_count.saturating_sub(1);
+        let mut approvals = Vec::new();
+        // Collect IDs that have been pending for at least 1 full poll cycle
+        let stale_ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, tc)| tc.first_seen_poll < cutoff)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale_ids {
+            if let Some(tc) = self.pending.remove(&id) {
+                approvals.push((tc.session_id, tc.tool_name, tc.summary));
+            }
+        }
+        approvals
+    }
+
+    /// Remove all pending entries for a session (e.g., when execution starts).
+    #[allow(dead_code)]
+    fn clear_session(&mut self, session_id: &str) {
+        self.pending.retain(|_, tc| tc.session_id != session_id);
+    }
+}
+
 // MARK: - Watcher
 
 pub fn spawn_watcher(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
@@ -67,6 +134,7 @@ pub fn spawn_watcher(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
 fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
     let sources = discover_sources(&home);
     let mut cursors = FileCursors::default();
+    let mut tool_tracker = PendingToolTracker::default();
 
     // On first run, seek all existing files to end so we only see new events.
     initialize_cursors(&sources, &mut cursors);
@@ -74,8 +142,12 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
     loop {
         thread::sleep(POLL_INTERVAL);
 
-        let events = poll_all_sources(&sources, &mut cursors);
-        if events.is_empty() {
+        let events = poll_all_sources(&sources, &mut cursors, &mut tool_tracker);
+
+        // Check for tool calls that have been pending for >1 poll cycle → approval needed
+        let approvals = tool_tracker.advance_poll();
+
+        if events.is_empty() && approvals.is_empty() {
             continue;
         }
 
@@ -85,7 +157,6 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                 if event.kind == SessionEventKind::QuestionRequested {
                     if let SessionEventPayload::QuestionRequest { ref options, .. } = event.payload
                     {
-                        // Derive session dir from the Copilot root
                         let copilot_root = home.join(".copilot/session-state");
                         let session_dir = copilot_root.join(event.session_id.as_str());
                         match tty_inject::discover_tty(&session_dir) {
@@ -102,6 +173,47 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                             }
                         }
                     }
+                }
+                // For ApprovalRequested from watcher, also register TTY for approve/deny injection
+                if event.kind == SessionEventKind::ApprovalRequested {
+                    let copilot_root = home.join(".copilot/session-state");
+                    let session_dir = copilot_root.join(event.session_id.as_str());
+                    if let Some(tty) = tty_inject::discover_tty(&session_dir) {
+                        eprintln!("[watcher] TTY for approval: {}: {}", event.session_id.as_str(), tty.display());
+                        daemon.copilot_ttys_mut().set(
+                            event.session_id.clone(),
+                            tty,
+                            vec!["allow".into(), "deny".into()],
+                        );
+                    }
+                }
+                let _ = daemon.ingest_event(event);
+            }
+
+            // Emit ApprovalRequested events for stale pending tool calls
+            for (session_id, tool_name, summary) in approvals {
+                eprintln!("[watcher] approval needed: {} ({}) in session {}", tool_name, summary, session_id);
+                let event = SessionEvent::new(
+                    SourceKind::Unknown,
+                    SessionId::new(&session_id),
+                    SessionEventKind::ApprovalRequested,
+                )
+                .with_title("Copilot Chat")
+                .with_summary(format!("{tool_name}: {summary}"))
+                .with_payload(SessionEventPayload::ApprovalRequest {
+                    request_id: RequestId::new(format!("copilot-approve-{}", current_epoch_secs())),
+                    tool_name,
+                    tool_input_summary: summary,
+                });
+                // Discover TTY for the approval
+                let copilot_root = home.join(".copilot/session-state");
+                let session_dir = copilot_root.join(&session_id);
+                if let Some(tty) = tty_inject::discover_tty(&session_dir) {
+                    daemon.copilot_ttys_mut().set(
+                        SessionId::new(&session_id),
+                        tty,
+                        vec!["allow".into(), "deny".into()],
+                    );
                 }
                 let _ = daemon.ingest_event(event);
             }
@@ -153,7 +265,11 @@ fn initialize_cursors(sources: &[WatchSource], cursors: &mut FileCursors) {
     }
 }
 
-fn poll_all_sources(sources: &[WatchSource], cursors: &mut FileCursors) -> Vec<SessionEvent> {
+fn poll_all_sources(
+    sources: &[WatchSource],
+    cursors: &mut FileCursors,
+    tool_tracker: &mut PendingToolTracker,
+) -> Vec<SessionEvent> {
     let mut events = Vec::new();
     let now = current_epoch_secs();
 
@@ -165,6 +281,12 @@ fn poll_all_sources(sources: &[WatchSource], cursors: &mut FileCursors) -> Vec<S
             }
             let new_lines = read_new_lines(&path, cursors);
             for line in new_lines {
+                // For Copilot files, track tool calls for approval detection
+                if matches!(source.kind, WatchSourceKind::Copilot) {
+                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                        track_copilot_tool_calls(&value, &path, tool_tracker);
+                    }
+                }
                 if let Some(event) = parse_line(&line, &source.kind, &path) {
                     events.push(event);
                 }
@@ -490,6 +612,76 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
             Some(event)
         }
         _ => None,
+    }
+}
+
+/// Track Copilot tool calls for approval detection.
+///
+/// Records tool requests from `assistant.message` for approval-needing tools,
+/// and marks them as started when `tool.execution_start` is seen.
+fn track_copilot_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToolTracker) {
+    let line_type = match value.get("type").and_then(|t| t.as_str()) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let session_id = session_id_from_copilot_path(path);
+
+    match line_type {
+        "assistant.message" => {
+            let data = match value.get("data") {
+                Some(d) => d,
+                None => return,
+            };
+            if let Some(trs) = data.get("toolRequests").and_then(|v| v.as_array()) {
+                for tr in trs {
+                    let tool_name = match tr.get("name").and_then(|n| n.as_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if !APPROVAL_TOOLS.contains(&tool_name) {
+                        continue;
+                    }
+                    let tool_call_id = match tr.get("toolCallId").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => continue,
+                    };
+                    let summary = tr
+                        .get("arguments")
+                        .and_then(|a| {
+                            a.get("command")
+                                .or_else(|| a.get("path"))
+                                .or_else(|| a.get("file_text"))
+                        })
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            if s.len() > 80 {
+                                format!("{}…", &s[..77])
+                            } else {
+                                s.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| tool_name.to_string());
+
+                    tracker.record_requested(
+                        tool_call_id,
+                        session_id.clone(),
+                        tool_name.to_string(),
+                        summary,
+                    );
+                }
+            }
+        }
+        "tool.execution_start" => {
+            if let Some(tool_call_id) = value
+                .get("data")
+                .and_then(|d| d.get("toolCallId"))
+                .and_then(|v| v.as_str())
+            {
+                tracker.mark_started(tool_call_id);
+            }
+        }
+        _ => {}
     }
 }
 
