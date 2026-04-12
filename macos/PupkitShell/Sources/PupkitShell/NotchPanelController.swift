@@ -37,6 +37,8 @@ final class NotchPanelController {
     private var hoverTimer: DispatchWorkItem?
     private var closeTimer: DispatchWorkItem?
     private var notchRect: NSRect = .zero
+    /// When false, the island won't auto-open on new attention events.
+    private var autoExpandEnabled = true
 
     var isVisible: Bool { panel?.isVisible == true }
 
@@ -68,7 +70,9 @@ final class NotchPanelController {
             closedNotchWidth: screen.notchSize.width,
             closedNotchHeight: screen.islandClosedHeight,
             suggestedTab: nil,
-            onAction: { _ in }
+            autoExpandEnabled: true,
+            onAction: { _ in },
+            onToggleAutoExpand: {}
         ))
         hostView.wantsLayer = true
         hostView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -91,7 +95,7 @@ final class NotchPanelController {
         let currentAttentionIds = Set(currentAttentions.map(\.request_id))
         let newIds = currentAttentionIds.subtracting(previousAttentionIds)
         let hasNew = !newIds.isEmpty
-        if hasNew && islandStatus == .closed {
+        if hasNew && islandStatus == .closed && autoExpandEnabled {
             programmaticOpen = true
             programmaticOpenTime = Date()
             openIsland()
@@ -164,7 +168,12 @@ final class NotchPanelController {
                 closedNotchWidth: screen.notchSize.width,
                 closedNotchHeight: screen.islandClosedHeight,
                 suggestedTab: tabHint,
-                onAction: { [weak self] action in self?.handleAction(action) }
+                autoExpandEnabled: autoExpandEnabled,
+                onAction: { [weak self] action in self?.handleAction(action) },
+                onToggleAutoExpand: { [weak self] in
+                    self?.autoExpandEnabled.toggle()
+                    self?.updateView()
+                }
             )
         }
 
@@ -383,7 +392,9 @@ struct IslandContentView: View {
     let closedNotchHeight: CGFloat
     /// Hint from controller to auto-switch tab when new attention arrives.
     let suggestedTab: String?
+    let autoExpandEnabled: Bool
     let onAction: (UiAction) -> Void
+    let onToggleAutoExpand: () -> Void
 
     @State private var isHovering = false
     @State private var freeformTexts: [String: String] = [:]
@@ -594,7 +605,7 @@ struct IslandContentView: View {
 
     // MARK: - Usage Strip (flanking notch)
 
-    private static let usageMicro: Font = .system(size: 16, weight: .medium, design: .monospaced)
+    private static let usageMicro: Font = .system(size: 14, weight: .medium, design: .monospaced)
 
     @ViewBuilder
     private func usageStrip(notchWidth: CGFloat, totalWidth: CGFloat) -> some View {
@@ -602,13 +613,19 @@ struct IslandContentView: View {
         let flankWidth = max(0, (totalWidth - notchWidth) / 2 - 8)
 
         HStack(spacing: 0) {
-            // Left flank: Claude Code usage
+            // Left flank: Claude Code usage (24h / 7d)
             HStack(spacing: 6) {
+                if let tokens24h = usage?.claude_24h_tokens {
+                    HStack(spacing: 2) {
+                        Text("Claude")
+                            .foregroundStyle(Self.toolTabs[0].color.opacity(0.7))
+                        Text("\(Self.formatTokens(tokens24h))/24h")
+                            .foregroundStyle(.white.opacity(0.50))
+                    }
+                }
                 if let tokens7d = usage?.claude_7d_tokens {
                     HStack(spacing: 2) {
-                        Text("CC")
-                            .foregroundStyle(Self.toolTabs[0].color.opacity(0.7))
-                        Text(Self.formatTokens(tokens7d))
+                        Text("\(Self.formatTokens(tokens7d))/7d")
                             .foregroundStyle(.white.opacity(0.50))
                     }
                 }
@@ -620,11 +637,11 @@ struct IslandContentView: View {
             Spacer()
                 .frame(width: notchWidth)
 
-            // Right flank: Codex + Copilot
+            // Right flank: Codex + Copilot + toggle
             HStack(spacing: 6) {
                 if let pct5h = usage?.codex_5h_remaining_pct {
                     HStack(spacing: 2) {
-                        Text("CX")
+                        Text("Codex")
                             .foregroundStyle(Self.toolTabs[1].color.opacity(0.7))
                         Text("\(pct5h)%")
                             .foregroundStyle(.white.opacity(0.50))
@@ -632,18 +649,25 @@ struct IslandContentView: View {
                 }
                 if let pctX10 = usage?.copilot_premium_remaining_pct_x10 {
                     HStack(spacing: 2) {
-                        Text("CP")
+                        Text("Copilot")
                             .foregroundStyle(Self.toolTabs[2].color.opacity(0.7))
                         Text(Self.formatPctX10(pctX10))
                             .foregroundStyle(.white.opacity(0.50))
                     }
                 }
+                Button(action: onToggleAutoExpand) {
+                    Image(systemName: autoExpandEnabled ? "bell.fill" : "bell.slash.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(autoExpandEnabled ? 0.6 : 0.3))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 6)
+                .help(autoExpandEnabled ? "Disable auto-expand" : "Enable auto-expand")
             }
             .font(Self.usageMicro)
             .frame(width: flankWidth, alignment: .leading)
             .padding(.leading, 6)
         }
-        .allowsHitTesting(false)
     }
 
     private static func formatTokens(_ tokens: UInt64) -> String {
@@ -669,9 +693,9 @@ struct IslandContentView: View {
 
     // Brand-accurate accent colors
     private static let toolTabs: [(key: String, tag: String, color: Color)] = [
-        ("ClaudeCode", "CC", Color(red: 0.855, green: 0.467, blue: 0.337)),  // #DA7756
-        ("Codex",      "CX", Color(red: 0.063, green: 0.639, blue: 0.498)),  // #10A37F
-        ("Copilot",    "CP", Color(red: 0.65, green: 0.45, blue: 0.95)),  // lighter purple
+        ("ClaudeCode", "ClaudeCode", Color(red: 0.855, green: 0.467, blue: 0.337)),  // #DA7756
+        ("Codex",      "Codex",      Color(red: 0.063, green: 0.639, blue: 0.498)),  // #10A37F
+        ("Copilot",    "Copilot",    Color(red: 0.65, green: 0.45, blue: 0.95)),  // lighter purple
     ]
 
     private static let mono: Font = .system(size: 14, weight: .regular, design: .monospaced)
