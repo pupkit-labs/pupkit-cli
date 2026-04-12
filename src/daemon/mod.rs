@@ -6,6 +6,7 @@ mod persistence;
 mod priority;
 mod registry;
 mod server;
+pub mod shell_launcher;
 pub mod tty_inject;
 pub mod watcher;
 

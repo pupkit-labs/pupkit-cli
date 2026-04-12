@@ -466,6 +466,7 @@ mod tests {
         DaemonConfig {
             socket_path: root.join("pupkitd.sock"),
             state_path: root.join("daemon-state.json"),
+            shell_binary_path: None,
         }
     }
 

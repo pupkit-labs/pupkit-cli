@@ -97,7 +97,9 @@ impl DaemonServer {
         Ok(())
     }
 
-    pub fn serve_forever(&self, socket_path: &Path) -> Result<(), String> {
+    /// Bind the Unix socket, returning the listener.
+    /// Call this before launching watcher / shell so they can connect immediately.
+    pub fn bind(&self, socket_path: &Path) -> Result<UnixListener, String> {
         if let Some(parent) = socket_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("failed to create socket dir: {error}"))?;
@@ -111,15 +113,12 @@ impl DaemonServer {
             }
             let _ = fs::remove_file(socket_path);
         }
+        UnixListener::bind(socket_path)
+            .map_err(|error| format!("failed to bind unix socket: {error}"))
+    }
 
-        let listener = UnixListener::bind(socket_path)
-            .map_err(|error| format!("failed to bind unix socket: {error}"))?;
-
-        // Start file watcher for auto-discovering AI sessions
-        if let Some(home) = env::var_os("HOME").map(Into::into) {
-            watcher::spawn_watcher(self.daemon.clone(), home);
-        }
-
+    /// Accept connections forever on an already-bound listener.
+    pub fn accept_loop(&self, listener: UnixListener) -> Result<(), String> {
         for stream in listener.incoming() {
             let server = self.clone();
             match stream {
@@ -134,5 +133,21 @@ impl DaemonServer {
             }
         }
         Ok(())
+    }
+
+    /// Expose the daemon Arc for external orchestration (watcher, etc.).
+    pub fn daemon_arc(&self) -> Arc<Mutex<PupkitDaemon>> {
+        self.daemon.clone()
+    }
+
+    /// Convenience: bind + watcher + accept in one call (backward compat).
+    pub fn serve_forever(&self, socket_path: &Path) -> Result<(), String> {
+        let listener = self.bind(socket_path)?;
+
+        if let Some(home) = env::var_os("HOME").map(Into::into) {
+            watcher::spawn_watcher(self.daemon.clone(), home);
+        }
+
+        self.accept_loop(listener)
     }
 }
