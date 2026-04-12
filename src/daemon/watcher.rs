@@ -77,17 +77,19 @@ struct PendingToolCall {
     tool_name: String,
     summary: String,
     first_seen_poll: u64,
+    jsonl_path: Option<PathBuf>,
 }
 
 impl PendingToolTracker {
     /// Record tool calls from an assistant.message event.
-    fn record_requested(&mut self, tool_call_id: String, session_id: String, source: SourceKind, tool_name: String, summary: String) {
+    fn record_requested(&mut self, tool_call_id: String, session_id: String, source: SourceKind, tool_name: String, summary: String, jsonl_path: Option<PathBuf>) {
         self.pending.entry(tool_call_id).or_insert(PendingToolCall {
             session_id,
             source,
             tool_name,
             summary,
             first_seen_poll: self.poll_count,
+            jsonl_path,
         });
     }
 
@@ -98,8 +100,8 @@ impl PendingToolTracker {
 
     /// Advance the poll counter and return approval events for tool calls
     /// that have been pending since the previous poll (survived one full cycle).
-    /// Returns (session_id, source, tool_name, summary) tuples.
-    fn advance_poll(&mut self) -> Vec<(String, SourceKind, String, String)> {
+    /// Returns (session_id, source, tool_name, summary, jsonl_path) tuples.
+    fn advance_poll(&mut self) -> Vec<(String, SourceKind, String, String, Option<PathBuf>)> {
         self.poll_count += 1;
         let cutoff = self.poll_count.saturating_sub(1);
         let mut approvals = Vec::new();
@@ -112,7 +114,7 @@ impl PendingToolTracker {
             .collect();
         for id in stale_ids {
             if let Some(tc) = self.pending.remove(&id) {
-                approvals.push((tc.session_id, tc.source, tc.tool_name, tc.summary));
+                approvals.push((tc.session_id, tc.source, tc.tool_name, tc.summary, tc.jsonl_path));
             }
         }
         approvals
@@ -169,6 +171,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                                     event.session_id.clone(),
                                     tty,
                                     options.clone(),
+                                    SourceKind::Copilot,
                                 );
                             }
                             None => {
@@ -187,6 +190,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                             event.session_id.clone(),
                             tty,
                             vec!["allow".into(), "deny".into()],
+                            SourceKind::Copilot,
                         );
                     }
                 }
@@ -194,7 +198,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
             }
 
             // Emit ApprovalRequested events for stale pending tool calls
-            for (session_id, source, tool_name, summary) in approvals {
+            for (session_id, source, tool_name, summary, jsonl_path) in approvals {
                 eprintln!("[watcher] approval needed: {} ({}) in session {} [{:?}]", tool_name, summary, session_id, source);
                 let title = match &source {
                     SourceKind::ClaudeCode => "Claude Code",
@@ -214,17 +218,34 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                     tool_name,
                     tool_input_summary: summary,
                 });
-                // Discover TTY for Copilot approval injection
-                if matches!(source, SourceKind::Copilot) {
-                    let copilot_root = home.join(".copilot/session-state");
-                    let session_dir = copilot_root.join(&session_id);
-                    if let Some(tty) = tty_inject::discover_tty(&session_dir) {
-                        daemon.copilot_ttys_mut().set(
-                            SessionId::new(&session_id),
-                            tty,
-                            vec!["allow".into(), "deny".into()],
-                        );
+                // Discover TTY for approval injection
+                match &source {
+                    SourceKind::Copilot => {
+                        let copilot_root = home.join(".copilot/session-state");
+                        let session_dir = copilot_root.join(&session_id);
+                        if let Some(tty) = tty_inject::discover_tty(&session_dir) {
+                            daemon.copilot_ttys_mut().set(
+                                SessionId::new(&session_id),
+                                tty,
+                                vec!["allow".into(), "deny".into()],
+                                SourceKind::Copilot,
+                            );
+                        }
                     }
+                    SourceKind::ClaudeCode | SourceKind::Codex => {
+                        if let Some(path) = &jsonl_path {
+                            if let Some(tty) = tty_inject::discover_tty_from_jsonl(path) {
+                                eprintln!("[watcher] TTY for {:?} approval: {}: {}", source, session_id, tty.display());
+                                daemon.copilot_ttys_mut().set(
+                                    SessionId::new(&session_id),
+                                    tty,
+                                    vec!["allow".into(), "deny".into()],
+                                    source.clone(),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 let _ = daemon.ingest_event(event);
             }
@@ -701,6 +722,7 @@ fn track_copilot_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToo
                         SourceKind::Copilot,
                         tool_name.to_string(),
                         summary,
+                        None,
                     );
                 }
             }
@@ -778,6 +800,7 @@ fn track_claude_tool_calls(value: &Value, path: &Path, tracker: &mut PendingTool
                         SourceKind::ClaudeCode,
                         tool_name.to_string(),
                         summary,
+                        Some(path.to_path_buf()),
                     );
                 }
             }
@@ -857,6 +880,7 @@ fn track_codex_tool_calls(value: &Value, path: &Path, tracker: &mut PendingToolT
                         SourceKind::Codex,
                         tool_name.to_string(),
                         summary,
+                        Some(path.to_path_buf()),
                     );
                 }
                 "function_call_output" => {

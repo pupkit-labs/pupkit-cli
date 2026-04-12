@@ -9,9 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::protocol::SessionId;
+use crate::protocol::{SessionId, SourceKind};
 
-/// Stores TTY paths and choice lists for active Copilot ask_user prompts.
+/// Stores TTY paths and choice lists for active tool-approval prompts.
+///
+/// Supports Copilot (arrow-key navigation), Claude Code & Codex (y/n text).
 #[derive(Debug, Default)]
 pub struct CopilotTtyStore {
     entries: HashMap<SessionId, TtyEntry>,
@@ -21,19 +23,22 @@ pub struct CopilotTtyStore {
 struct TtyEntry {
     pub tty_path: PathBuf,
     pub choices: Vec<String>,
+    pub source: SourceKind,
 }
 
 impl CopilotTtyStore {
-    pub fn set(&mut self, session_id: SessionId, tty_path: PathBuf, choices: Vec<String>) {
-        self.entries.insert(session_id, TtyEntry { tty_path, choices });
+    pub fn set(&mut self, session_id: SessionId, tty_path: PathBuf, choices: Vec<String>, source: SourceKind) {
+        self.entries.insert(session_id, TtyEntry { tty_path, choices, source });
     }
 
     pub fn remove(&mut self, session_id: &SessionId) {
         self.entries.remove(session_id);
     }
 
-    /// Inject a choice selection into the Copilot TTY.
+    /// Inject a choice selection into the TTY.
     ///
+    /// For Copilot: arrow-key navigation in TUI list.
+    /// For Claude Code / Codex: simple "y" or "n" text injection.
     /// Returns Ok(true) if injection was performed, Ok(false) if no TTY entry found.
     pub fn inject_answer(
         &mut self,
@@ -45,21 +50,45 @@ impl CopilotTtyStore {
             None => return Ok(false),
         };
 
-        let choice_index = entry
-            .choices
-            .iter()
-            .position(|c| c == option_text)
-            .unwrap_or(0);
-
-        inject_choice(&entry.tty_path, choice_index)
-            .map_err(|e| format!("TTY inject failed: {e}"))?;
-
+        match entry.source {
+            SourceKind::ClaudeCode => {
+                // Claude Code uses simple y/n text prompts
+                let text = match option_text {
+                    "allow" => "y",
+                    "deny" => "n",
+                    _ => option_text,
+                };
+                inject_text(&entry.tty_path, text)
+                    .map_err(|e| format!("TTY inject failed: {e}"))?;
+            }
+            SourceKind::Codex => {
+                // Codex uses a ratatui TUI with selectable options (like Copilot)
+                let choice_index = entry
+                    .choices
+                    .iter()
+                    .position(|c| c == option_text)
+                    .unwrap_or(0);
+                inject_choice(&entry.tty_path, choice_index)
+                    .map_err(|e| format!("TTY inject failed: {e}"))?;
+            }
+            _ => {
+                // Copilot-style arrow navigation
+                let choice_index = entry
+                    .choices
+                    .iter()
+                    .position(|c| c == option_text)
+                    .unwrap_or(0);
+                inject_choice(&entry.tty_path, choice_index)
+                    .map_err(|e| format!("TTY inject failed: {e}"))?;
+            }
+        }
         Ok(true)
     }
 
-    /// Inject a freeform text answer into the Copilot TTY.
+    /// Inject a freeform text answer into the TTY.
     ///
-    /// Navigates past all choices to the text input, types the text, then submits.
+    /// For Copilot: navigates past all choices to the text input, types, submits.
+    /// For Claude Code / Codex: directly types the text and presses Enter.
     /// Returns Ok(true) if injection was performed, Ok(false) if no TTY entry found.
     pub fn inject_freeform(
         &mut self,
@@ -71,9 +100,18 @@ impl CopilotTtyStore {
             None => return Ok(false),
         };
 
-        inject_freeform_text(&entry.tty_path, entry.choices.len(), text)
-            .map_err(|e| format!("TTY freeform inject failed: {e}"))?;
-
+        match entry.source {
+            SourceKind::ClaudeCode => {
+                // Claude Code: direct text injection
+                inject_text(&entry.tty_path, text)
+                    .map_err(|e| format!("TTY freeform inject failed: {e}"))?;
+            }
+            _ => {
+                // Copilot & Codex: navigate past TUI choices, then type
+                inject_freeform_text(&entry.tty_path, entry.choices.len(), text)
+                    .map_err(|e| format!("TTY freeform inject failed: {e}"))?;
+            }
+        }
         Ok(true)
     }
 }
@@ -89,6 +127,30 @@ impl CopilotTtyStore {
 pub fn discover_tty(session_dir: &Path) -> Option<PathBuf> {
     let pid = read_pid_from_lock(session_dir)?;
     find_tty_for_pid(pid)
+}
+
+/// Discover the TTY device for a Claude Code / Codex session via its JSONL file.
+///
+/// Uses `lsof` to find which process has the file open, then resolves that
+/// process's controlling TTY via `find_tty_for_pid`.
+pub fn discover_tty_from_jsonl(jsonl_path: &Path) -> Option<PathBuf> {
+    let output = Command::new("lsof")
+        .arg(jsonl_path.to_string_lossy().as_ref())
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // lsof header: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            if let Ok(pid) = parts[1].parse::<u32>() {
+                if let Some(tty) = find_tty_for_pid(pid) {
+                    return Some(tty);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn read_pid_from_lock(session_dir: &Path) -> Option<u32> {
@@ -124,6 +186,45 @@ fn find_tty_for_pid(pid: u32) -> Option<PathBuf> {
 }
 
 // MARK: - Keystroke Injection
+
+/// Inject a simple text string followed by Enter into an iTerm2 session.
+/// Used for Claude Code / Codex y/n approval prompts.
+fn inject_text(tty_path: &Path, text: &str) -> std::io::Result<()> {
+    let tty_str = tty_path.to_string_lossy();
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        r#"tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if tty of s is "{tty}" then
+                    tell s to write text "{text}" without newline
+                    tell s to write text (character id 13) without newline
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return "session not found"
+end tell"#,
+        tty = tty_str,
+        text = escaped,
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+
+    let result = String::from_utf8_lossy(&output.stdout);
+    if result.trim() != "ok" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("iTerm2 session not found for {tty_str}: {result}"),
+        ));
+    }
+    Ok(())
+}
 
 /// Inject a choice selection via osascript + iTerm2.
 ///
@@ -279,6 +380,7 @@ mod tests {
             sid.clone(),
             PathBuf::from("/dev/null"),
             vec!["Option A".into(), "Option B".into(), "Option C".into()],
+            SourceKind::Copilot,
         );
 
         // osascript won't find an iTerm2 session for /dev/null — inject returns Err
@@ -306,6 +408,7 @@ mod tests {
             sid.clone(),
             PathBuf::from("/dev/null"),
             vec!["A".into(), "B".into()],
+            SourceKind::Copilot,
         );
 
         // osascript won't find /dev/null — inject returns Err
