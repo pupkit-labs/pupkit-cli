@@ -261,7 +261,8 @@ impl PupkitDaemon {
         Ok(decision)
     }
 
-    pub fn state_snapshot(&self) -> UiStateSnapshot {
+    pub fn state_snapshot(&mut self) -> UiStateSnapshot {
+        self.registry.cleanup_expired(current_unix_timestamp());
         let mut sessions: Vec<SessionListItem> = self
             .registry
             .all()
@@ -303,7 +304,7 @@ impl PupkitDaemon {
         }
     }
 
-    pub fn report(&self) -> String {
+    pub fn report(&mut self) -> String {
         let state = self.state_snapshot();
         let top = state
             .top_attention
@@ -469,7 +470,7 @@ mod tests {
             .unwrap();
         daemon.persist_state().unwrap();
 
-        let restored = PupkitDaemon::for_config(config);
+        let mut restored = PupkitDaemon::for_config(config);
         let snapshot = restored.state_snapshot();
         assert!(snapshot.top_attention.is_none());
         assert_eq!(
