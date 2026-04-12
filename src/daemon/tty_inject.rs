@@ -131,15 +131,27 @@ pub fn discover_tty(session_dir: &Path) -> Option<PathBuf> {
 
 /// Discover the TTY device for a Claude Code / Codex session via its JSONL file.
 ///
-/// Uses `lsof` to find which process has the file open, then resolves that
-/// process's controlling TTY via `find_tty_for_pid`.
+/// Claude Code doesn't keep the JSONL file descriptor open, so `lsof <file>`
+/// won't find the process. Instead we:
+/// 1. Extract the sanitised cwd from the JSONL parent directory name
+///    (e.g. `-Users-pengxu-liu-project` → `/Users/pengxu/liu/project`)
+/// 2. Find all `claude` / `codex` processes via `pgrep`
+/// 3. Match the process whose cwd equals the extracted path
+/// 4. Resolve the TTY via `find_tty_for_pid`
+///
+/// Falls back to `lsof <file>` for the rare case where the fd is still held.
 pub fn discover_tty_from_jsonl(jsonl_path: &Path) -> Option<PathBuf> {
+    // Strategy 1: match process cwd to the JSONL directory name
+    if let Some(tty) = discover_tty_by_cwd(jsonl_path) {
+        return Some(tty);
+    }
+
+    // Strategy 2: fallback — lsof on the file itself (works if fd still open)
     let output = Command::new("lsof")
         .arg(jsonl_path.to_string_lossy().as_ref())
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // lsof header: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
     for line in stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
@@ -151,6 +163,75 @@ pub fn discover_tty_from_jsonl(jsonl_path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Extract the original cwd from a Claude/Codex JSONL parent directory name.
+///
+/// Directory names look like `-Users-pengxu-liu-project` which maps to
+/// `/Users/pengxu.liu/project`. The heuristic: replace leading `-` with `/`
+/// and internal `-` with `/`, then check if the path exists. If not, this
+/// won't match and we fall through to the lsof fallback.
+fn cwd_from_jsonl_dir(jsonl_path: &Path) -> Option<String> {
+    let dir_name = jsonl_path.parent()?.file_name()?.to_str()?;
+    // The directory name is the cwd with `/` replaced by `-`
+    // e.g. `-Users-pengxu-liu-liupx-git-study-lang_extract_learning`
+    // → `/Users/pengxu.liu/liupx/git/study/lang_extract_learning`
+    // But `.` in usernames becomes `-` too, so exact reversal is ambiguous.
+    // We'll collect candidate PIDs and match by checking their actual cwd.
+    Some(dir_name.to_string())
+}
+
+/// Find a claude/codex process whose cwd matches the JSONL directory.
+fn discover_tty_by_cwd(jsonl_path: &Path) -> Option<PathBuf> {
+    let dir_name = cwd_from_jsonl_dir(jsonl_path)?;
+
+    // Claude sanitises cwd by replacing `/`, `.`, `_` and other chars with `-`.
+    // We normalise both sides the same way before comparing.
+    let normalised_dir = normalise_for_cwd_match(&dir_name);
+
+    // Get PIDs of claude and codex processes
+    let mut pids = Vec::new();
+    for name in &["claude", "codex"] {
+        if let Ok(output) = Command::new("pgrep").arg("-x").arg(name).output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+
+    for pid in pids {
+        // Get the cwd of this process
+        if let Ok(cwd_output) = Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-a", "-d", "cwd", "-F", "n"])
+            .output()
+        {
+            let cwd_stdout = String::from_utf8_lossy(&cwd_output.stdout);
+            for line in cwd_stdout.lines() {
+                if let Some(cwd_path) = line.strip_prefix('n') {
+                    // Sanitise the cwd: replace `/` with `-`, then normalise `.` and `_`
+                    let sanitised = cwd_path.replace('/', "-");
+                    if normalise_for_cwd_match(&sanitised) == normalised_dir {
+                        return find_tty_for_pid(pid);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Normalise a sanitised path for fuzzy cwd matching.
+/// Claude replaces `/`, `.`, `_`, and possibly other chars with `-`.
+fn normalise_for_cwd_match(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '.' | '_' | '/' => '-',
+            _ => c,
+        })
+        .collect()
 }
 
 fn read_pid_from_lock(session_dir: &Path) -> Option<u32> {
