@@ -6,6 +6,7 @@ mod persistence;
 mod priority;
 mod registry;
 mod server;
+pub mod watcher;
 
 pub use app::PupkitDaemon;
 pub use config::DaemonConfig;

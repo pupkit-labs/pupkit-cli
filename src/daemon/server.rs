@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -7,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::daemon::PupkitDaemon;
+use crate::daemon::watcher;
 use crate::protocol::{
     ClientRequest, HookDecision, ServerResponse, SessionEventKind, SessionStatus,
 };
@@ -112,6 +114,11 @@ impl DaemonServer {
 
         let listener = UnixListener::bind(socket_path)
             .map_err(|error| format!("failed to bind unix socket: {error}"))?;
+
+        // Start file watcher for auto-discovering AI sessions
+        if let Some(home) = env::var_os("HOME").map(Into::into) {
+            watcher::spawn_watcher(self.daemon.clone(), home);
+        }
 
         for stream in listener.incoming() {
             let server = self.clone();
