@@ -132,7 +132,7 @@ final class NotchPanelController {
         let insetH = IslandMetrics.openedShadowHorizontalInset
         let insetB = IslandMetrics.openedShadowBottomInset
         let openedWidth = IslandMetrics.openedPanelWidth
-        let contentHeight: CGFloat = 220
+        let contentHeight: CGFloat = 360
         let width = openedWidth + (insetH * 2) + 28
         let height = screen.islandClosedHeight + contentHeight + insetB
         return CGSize(width: width, height: height)
@@ -273,6 +273,58 @@ final class NotchPanelController {
 private let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
 private let closeAnimation = Animation.smooth(duration: 0.3)
 
+// MARK: - Flow Layout (wrapping)
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let containerWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > containerWidth && x > 0 {
+                x = 0
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            lineHeight = max(lineHeight, size.height)
+            x += size.width + spacing
+        }
+        return CGSize(width: containerWidth, height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX {
+                x = bounds.minX
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            lineHeight = max(lineHeight, size.height)
+            x += size.width + spacing
+        }
+    }
+}
+
+// MARK: - Content Height Preference Key
+
+private struct ContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // MARK: - Island Content View
 
 struct IslandContentView: View {
@@ -283,6 +335,7 @@ struct IslandContentView: View {
     let onAction: (UiAction) -> Void
 
     @State private var isHovering = false
+    @State private var measuredContentHeight: CGFloat = 80
 
     private var hasAttention: Bool { snapshot?.top_attention != nil }
     private var hasAnySessions: Bool { (snapshot?.sessions.count ?? 0) > 0 }
@@ -313,7 +366,9 @@ struct IslandContentView: View {
         let layoutHeight = max(0, availableSize.height - insetB)
 
         let openedWidth = min(IslandMetrics.openedPanelWidth, layoutWidth - 28)
-        let openedHeight = max(closedNotchHeight, layoutHeight - 14)
+        // Dynamic height: header + measured content + padding, capped to available space
+        let dynamicOpenedHeight = closedNotchHeight + measuredContentHeight + 20
+        let openedHeight = min(dynamicOpenedHeight, layoutHeight - 14)
 
         let closedWidth = closedNotchWidth
         let closedHeight = closedNotchHeight
@@ -342,8 +397,14 @@ struct IslandContentView: View {
                     if isOpened {
                         openedContent
                             .frame(width: openedWidth - 32)
-                            .frame(maxHeight: currentHeight - closedNotchHeight - 12, alignment: .top)
-                            .clipped()
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+                                }
+                            )
+                            .onPreferenceChange(ContentHeightKey.self) { height in
+                                measuredContentHeight = max(height, 40)
+                            }
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
@@ -491,7 +552,7 @@ struct IslandContentView: View {
             }
 
         case .waitingQuestion:
-            HStack(spacing: 6) {
+            FlowLayout(spacing: 6) {
                 ForEach(attention.options, id: \.self) { option in
                     Button {
                         onAction(.answerOption(requestId: attention.request_id, optionId: option))
@@ -499,6 +560,7 @@ struct IslandContentView: View {
                         Text(option)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.white)
+                            .lineLimit(2)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 5)
                             .background(Color.blue, in: Capsule())
