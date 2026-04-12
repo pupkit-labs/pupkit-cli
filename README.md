@@ -19,6 +19,12 @@ The current product surface is intentionally small:
 - `pupkit auth`
 - `pupkit update`
 
+## Project documents
+
+Non-README project documents have been moved to the companion repository: `git@git.liupx.com:pupkit-labs/pupkit-cli-docs.git`.
+
+This repository keeps the user-facing README files, while design notes, plans, research reports, changelog history, and archived project docs live in `pupkit-cli-docs`.
+
 ## Install 📦
 
 ### Homebrew
