@@ -2,7 +2,7 @@
 
 # pupkit 🐾
 
-`pupkit` 是一个以 welcome 为核心的 CLI 工具，用来在终端里快速展示本机环境信息和 AI 使用概览。
+`pupkit` 是一个以 welcome 为核心的 CLI 工具，用来在终端里快速展示本机环境信息和 AI 使用概览——并附带原生 macOS 灵动岛伴侣界面。
 
 它会输出一个精简的欢迎页，包含：
 
@@ -12,12 +12,15 @@
 - Codex 限流速览
 - GitHub Copilot 配额速览
 
-当前对外功能面刻意保持很小：
+在 macOS 上，pupkit 还提供 **PupkitShell** —— 一个原生 SwiftUI 叠加层，显示在屏幕刘海区域（灵动岛风格），实时展示 AI 会话状态、审批请求和工具活动。
 
-- `pupkit`
-- `pupkit welcome`
-- `pupkit auth`
-- `pupkit update`
+当前对外功能面：
+
+- `pupkit` —— 欢迎页 + 后台自动启动 daemon
+- `pupkit welcome` —— 显式渲染欢迎页
+- `pupkit daemon` —— 后台服务，追踪 AI 会话 + 启动 PupkitShell
+- `pupkit auth` —— GitHub 设备流认证
+- `pupkit update` —— 自更新（macOS 同时更新 PupkitShell）
 
 ## 项目文档
 
@@ -106,10 +109,18 @@ end
 pupkit
 ```
 
+这同时会在后台自动启动 daemon。在 macOS 上，daemon 会自动启动 PupkitShell（灵动岛叠加层）。
+
 或者显式执行：
 
 ```sh
 pupkit welcome
+```
+
+手动启动 daemon（如果需要）：
+
+```sh
+pupkit daemon
 ```
 
 如果你需要重新刷新 GitHub 认证，用来获取 Copilot 配额：
@@ -137,6 +148,20 @@ pupkit update
 - 代理状态
 - Claude、Codex、Copilot 的 AI Quick Look
 
+同时会在后台自动启动 daemon（如果尚未运行）。
+
+### `daemon`
+
+启动后台服务，追踪 AI 编码会话。daemon 的功能：
+
+- 绑定 Unix socket 到 `~/.local/share/pupkit/pupkitd.sock`
+- 监听 Claude Code、Codex、Copilot 的 JSONL 文件以发现会话活动
+- 接收来自 AI 工具 hook 的 bridge 事件
+- 在 macOS 上自动发现并启动 **PupkitShell**（灵动岛叠加层）
+- 如果 PupkitShell 本地不存在，会从最新 GitHub Release 自动下载
+
+当已有 daemon 在运行时，再次执行 `pupkit daemon` 会报错退出（socket 冲突检测）。
+
 ### `auth`
 
 强制重新走一次 GitHub device flow，并把 token 保存下来，供后续 Copilot 配额请求复用。
@@ -148,6 +173,8 @@ pupkit update
 如果当前版本已经是最新 release，`update` 会直接退出，不再重复安装。
 
 如果 `pupkit` 是通过 Homebrew 安装的，请改用 `brew upgrade pupkit`。
+
+在 macOS 上，`update` 还会从 release archive 中下载 PupkitShell。
 
 ## 认证 🔐
 
@@ -176,6 +203,24 @@ PUP_COPILOT_DEVICE_AUTH=1 pupkit welcome
 - `GH_TOKEN`：回退 GitHub token
 - `PUP_COPILOT_DEVICE_AUTH=1`：允许 `welcome` 在需要时进入 GitHub device flow
 - `PUP_PROXY_TUN_ADDR`：可选的 `host:port`，用于代理 / TUN 探测
+- `PUPKIT_SHELL_PATH`：指定 PupkitShell 二进制路径（仅 macOS）
+- `PUP_COPILOT_API_PORT`：copilot-api 服务端口（默认：1414）
+
+## PupkitShell — macOS 灵动岛 🏝️
+
+在 macOS 上，pupkit 内含 **PupkitShell**，一个原生 SwiftUI 叠加层，显示在屏幕刘海区域（灵动岛风格），内容包括：
+
+- 活跃的 AI 编码会话（Claude、Codex、Copilot）及工具专属像素图标
+- 需要你关注的审批请求
+- 会话活动和工具执行状态
+- 各会话的用量指标
+
+PupkitShell 会自动：
+- 通过 Homebrew 和 release archive **打包分发**
+- 首次 `pupkit daemon` 启动时如果不存在则**自动下载**
+- daemon 启动时**自动拉起**（已在运行时跳过）
+
+源码位于 `macos/PupkitShell/`（Swift Package Manager 项目，需要 macOS 14+）。
 
 ## 开发 🛠️
 

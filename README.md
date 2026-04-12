@@ -2,7 +2,7 @@
 
 # pupkit 🐾
 
-`pupkit` is a welcome-first CLI for surfacing local environment info and AI usage at a glance.
+`pupkit` is a welcome-first CLI for surfacing local environment info and AI usage at a glance — with a native macOS Dynamic Island companion.
 
 It is designed to render a compact terminal welcome screen with:
 
@@ -12,12 +12,15 @@ It is designed to render a compact terminal welcome screen with:
 - Codex rate-limit quick look
 - GitHub Copilot quota quick look
 
-The current product surface is intentionally small:
+On macOS, pupkit also provides **PupkitShell** — a native SwiftUI overlay at the screen notch (Dynamic Island) that shows live AI session status, approval requests, and tool activity.
 
-- `pupkit`
-- `pupkit welcome`
-- `pupkit auth`
-- `pupkit update`
+The current product surface:
+
+- `pupkit` — welcome screen + auto-starts daemon in background
+- `pupkit welcome` — explicit welcome screen
+- `pupkit daemon` — background service for AI session tracking + PupkitShell
+- `pupkit auth` — GitHub device flow for Copilot quota
+- `pupkit update` — self-update (includes PupkitShell on macOS)
 
 ## Project documents
 
@@ -106,10 +109,18 @@ Render the welcome screen:
 pupkit
 ```
 
+This also auto-starts the daemon in the background. On macOS, the daemon launches PupkitShell (Dynamic Island overlay) automatically.
+
 Or explicitly:
 
 ```sh
 pupkit welcome
+```
+
+Start the daemon manually (if needed):
+
+```sh
+pupkit daemon
 ```
 
 If you need to refresh GitHub authentication for Copilot quota lookup:
@@ -137,6 +148,20 @@ This includes:
 - proxy status
 - AI Quick Look for Claude, Codex, and Copilot
 
+Also auto-starts the daemon in background if not already running.
+
+### `daemon`
+
+Start the background service that tracks AI coding sessions. The daemon:
+
+- Binds a Unix socket at `~/.local/share/pupkit/pupkitd.sock`
+- Watches JSONL files from Claude Code, Codex, and Copilot for session activity
+- Receives bridge events from AI tool hooks
+- On macOS, auto-discovers and launches **PupkitShell** (Dynamic Island overlay)
+- If PupkitShell is not found locally, downloads it from the latest GitHub release
+
+Running `pupkit daemon` when one is already active exits with an error (socket conflict detection).
+
 ### `auth`
 
 Force a fresh GitHub device flow and store the resulting token for later Copilot quota requests.
@@ -148,6 +173,8 @@ Update `pupkit` to the latest GitHub Release via the shell installer.
 If the current version is already the latest release, `update` exits without reinstalling.
 
 If `pupkit` was installed with Homebrew, use `brew upgrade pupkit` instead.
+
+On macOS, `update` also downloads PupkitShell from the release archive.
 
 ## Authentication 🔐
 
@@ -176,6 +203,24 @@ PUP_COPILOT_DEVICE_AUTH=1 pupkit welcome
 - `GH_TOKEN`: fallback GitHub token
 - `PUP_COPILOT_DEVICE_AUTH=1`: allow `welcome` to enter GitHub device flow when needed
 - `PUP_PROXY_TUN_ADDR`: optional `host:port` override used for proxy/TUN detection
+- `PUPKIT_SHELL_PATH`: override path to PupkitShell binary (macOS only)
+- `PUP_COPILOT_API_PORT`: port for copilot-api service (default: 1414)
+
+## PupkitShell — macOS Dynamic Island 🏝️
+
+On macOS, pupkit includes **PupkitShell**, a native SwiftUI overlay that appears at the screen notch area (Dynamic Island style). It shows:
+
+- Active AI coding sessions (Claude, Codex, Copilot) with tool-specific pixel art icons
+- Approval requests that need your attention
+- Session activity and tool execution status
+- Usage metrics per session
+
+PupkitShell is automatically:
+- **Bundled** in Homebrew and release archives
+- **Downloaded** on first `pupkit daemon` if not present
+- **Launched** when the daemon starts (skipped if already running)
+
+The source lives in `macos/PupkitShell/` (Swift Package Manager project, requires macOS 14+).
 
 ## Development 🛠️
 
