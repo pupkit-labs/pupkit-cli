@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::{log_debug, log_info, log_warn};
+
 use crate::daemon::PupkitDaemon;
 use crate::daemon::tty_inject;
 use crate::protocol::{
@@ -178,7 +180,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                         let session_dir = copilot_root.join(event.session_id.as_str());
                         match tty_inject::discover_tty(&session_dir) {
                             Some(tty) => {
-                                eprintln!("[watcher] TTY discovered for {}: {}", event.session_id.as_str(), tty.display());
+                                log_debug!("[watcher] TTY discovered for {}: {}", event.session_id.as_str(), tty.display());
                                 daemon.copilot_ttys_mut().set(
                                     event.session_id.clone(),
                                     tty,
@@ -187,7 +189,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                                 );
                             }
                             None => {
-                                eprintln!("[watcher] TTY discovery failed for session dir: {}", session_dir.display());
+                                log_warn!("[watcher] TTY discovery failed for session dir: {}", session_dir.display());
                             }
                         }
                     }
@@ -197,7 +199,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                     let copilot_root = home.join(".copilot/session-state");
                     let session_dir = copilot_root.join(event.session_id.as_str());
                     if let Some(tty) = tty_inject::discover_tty(&session_dir) {
-                        eprintln!("[watcher] TTY for approval: {}: {}", event.session_id.as_str(), tty.display());
+                        log_debug!("[watcher] TTY for approval: {}: {}", event.session_id.as_str(), tty.display());
                         daemon.copilot_ttys_mut().set(
                             event.session_id.clone(),
                             tty,
@@ -211,7 +213,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
 
             // Emit ApprovalRequested events for stale pending tool calls
             for (session_id, source, tool_name, summary, jsonl_path) in approvals {
-                eprintln!("[watcher] approval needed: {} ({}) in session {} [{:?}]", tool_name, summary, session_id, source);
+                log_info!("[watcher] approval needed: {} ({}) in session {} [{:?}]", tool_name, summary, session_id, source);
                 let title = match &source {
                     SourceKind::ClaudeCode => "Claude Code",
                     SourceKind::Codex => "Codex",
@@ -247,7 +249,7 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                     SourceKind::ClaudeCode | SourceKind::Codex => {
                         if let Some(path) = &jsonl_path {
                             if let Some(tty) = tty_inject::discover_tty_from_jsonl(path) {
-                                eprintln!("[watcher] TTY for {:?} approval: {}: {}", source, session_id, tty.display());
+                                log_debug!("[watcher] TTY for {:?} approval: {}: {}", source, session_id, tty.display());
                                 // Claude Code TUI: Yes / Yes-all / No (3 options)
                                 daemon.copilot_ttys_mut().set(
                                     SessionId::new(&session_id),

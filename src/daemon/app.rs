@@ -1,6 +1,8 @@
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{log_debug, log_error, log_warn};
+
 use crate::daemon::pending::{PendingRequest, PendingStore, PendingWaitHandle};
 use crate::daemon::persistence::{PersistentDaemonState, load_state, save_state};
 use crate::daemon::tty_inject::CopilotTtyStore;
@@ -36,7 +38,7 @@ impl PupkitDaemon {
             copilot_ttys: CopilotTtyStore::default(),
         };
         if let Err(error) = daemon.restore_state() {
-            eprintln!("warning: {error}");
+            log_warn!("{error}");
         }
         daemon
     }
@@ -242,9 +244,9 @@ impl PupkitDaemon {
                 if let Some(sid) = &session_id {
                     // For Copilot, "approve" = select first option (Allow)
                     match self.copilot_ttys.inject_answer(sid, "allow") {
-                        Ok(true) => eprintln!("[tty] injected approval for session {}", sid.as_str()),
+                        Ok(true) => log_debug!("[tty] injected approval for session {}", sid.as_str()),
                         Ok(false) => {}
-                        Err(e) => eprintln!("[tty] approval injection failed: {e}"),
+                        Err(e) => log_error!("[tty] approval injection failed: {e}"),
                     }
                 }
                 self.pending.resolve_approval(
@@ -262,9 +264,9 @@ impl PupkitDaemon {
                 if let Some(sid) = &session_id {
                     // For Copilot, "deny" = select second option (index 1)
                     match self.copilot_ttys.inject_answer(sid, "deny") {
-                        Ok(true) => eprintln!("[tty] injected denial for session {}", sid.as_str()),
+                        Ok(true) => log_debug!("[tty] injected denial for session {}", sid.as_str()),
                         Ok(false) => {}
-                        Err(e) => eprintln!("[tty] denial injection failed: {e}"),
+                        Err(e) => log_error!("[tty] denial injection failed: {e}"),
                     }
                 }
                 self.pending
@@ -278,12 +280,12 @@ impl PupkitDaemon {
                 let session_id = self.pending.session_for_request(&request_id);
                 if let Some(sid) = &session_id {
                     match self.copilot_ttys.inject_answer(sid, &option_id) {
-                        Ok(true) => eprintln!("[tty] injected answer for session {}", sid.as_str()),
-                        Ok(false) => eprintln!("[tty] no TTY entry for session {}", sid.as_str()),
-                        Err(e) => eprintln!("[tty] injection failed: {e}"),
+                        Ok(true) => log_debug!("[tty] injected answer for session {}", sid.as_str()),
+                        Ok(false) => log_warn!("[tty] no TTY entry for session {}", sid.as_str()),
+                        Err(e) => log_error!("[tty] injection failed: {e}"),
                     }
                 } else {
-                    eprintln!("[tty] no session found for request {:?}", request_id.as_str());
+                    log_warn!("[tty] no session found for request {:?}", request_id.as_str());
                 }
                 self.pending
                     .resolve_answer(&request_id, UserAnswer::Option { option_id })
@@ -292,9 +294,9 @@ impl PupkitDaemon {
                 let session_id = self.pending.session_for_request(&request_id);
                 if let Some(sid) = &session_id {
                     match self.copilot_ttys.inject_freeform(sid, &text) {
-                        Ok(true) => eprintln!("[tty] injected freeform for session {}", sid.as_str()),
-                        Ok(false) => eprintln!("[tty] no TTY entry for session {}", sid.as_str()),
-                        Err(e) => eprintln!("[tty] freeform injection failed: {e}"),
+                        Ok(true) => log_debug!("[tty] injected freeform for session {}", sid.as_str()),
+                        Ok(false) => log_warn!("[tty] no TTY entry for session {}", sid.as_str()),
+                        Err(e) => log_error!("[tty] freeform injection failed: {e}"),
                     }
                 }
                 self.pending

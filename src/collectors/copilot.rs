@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::log_info;
+
 use serde_json::{Value, json};
 
 use crate::model::{CopilotQuotaEntry, CopilotQuotaInfo, CopilotUsageSummary, UsageAvailability};
@@ -67,7 +69,7 @@ pub fn run_github_auth_flow() -> Result<PathBuf, String> {
 
     let device_code =
         request_device_code().ok_or_else(|| "failed to request GitHub device code".to_string())?;
-    eprintln!(
+    log_info!(
         "Copilot auth required. Open {} and enter code {}.",
         device_code.verification_uri, device_code.user_code
     );
@@ -402,7 +404,7 @@ fn authenticate_github_token(home: Option<&Path>) -> Option<String> {
     }
 
     let device_code = request_device_code()?;
-    eprintln!(
+    log_info!(
         "Copilot auth required. Open {} and enter code {}.",
         device_code.verification_uri, device_code.user_code
     );

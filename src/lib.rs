@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod collectors;
 pub mod commands;
 pub mod daemon;
+pub mod log;
 pub mod model;
 pub mod protocol;
 pub mod render;
