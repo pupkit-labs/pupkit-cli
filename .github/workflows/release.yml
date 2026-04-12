@@ -144,6 +144,56 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+      # ── PupkitShell: build Swift binary and inject into macOS archives ──
+      - name: Build PupkitShell (macOS only)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          cd macos/PupkitShell
+
+          # Determine Swift arch from cargo-dist target triple
+          TARGETS="${{ join(matrix.targets, ' ') }}"
+          SWIFT_ARCH="arm64"
+          if echo "$TARGETS" | grep -q "x86_64"; then
+            SWIFT_ARCH="x86_64"
+          fi
+          echo "Building PupkitShell for arch=${SWIFT_ARCH}"
+
+          swift build -c release --arch "$SWIFT_ARCH"
+          echo "PupkitShell built successfully"
+          ls -la .build/release/PupkitShell
+          ls -la .build/release/PupkitShell_PupkitShell.bundle/ 2>/dev/null || echo "No resource bundle (ok)"
+      - name: Inject PupkitShell into release archives (macOS only)
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          SHELL_BIN="macos/PupkitShell/.build/release/PupkitShell"
+          SHELL_BUNDLE="macos/PupkitShell/.build/release/PupkitShell_PupkitShell.bundle"
+
+          for archive in target/distrib/pupkit-*-apple-darwin*.tar.xz; do
+            [ -f "$archive" ] || continue
+            echo "==> Injecting PupkitShell into $archive"
+
+            workdir=$(mktemp -d)
+            tar -xf "$archive" -C "$workdir"
+            inner=$(ls "$workdir" | head -1)
+
+            cp "$SHELL_BIN" "$workdir/$inner/"
+            chmod +x "$workdir/$inner/PupkitShell"
+            if [ -d "$SHELL_BUNDLE" ]; then
+              cp -R "$SHELL_BUNDLE" "$workdir/$inner/"
+            fi
+
+            rm "$archive"
+            tar -cJf "$archive" -C "$workdir" "$inner"
+            rm -rf "$workdir"
+
+            # Regenerate checksum if present
+            if [ -f "${archive}.sha256" ]; then
+              shasum -a 256 "$archive" | awk '{print $1}' > "${archive}.sha256"
+            fi
+            echo "==> Done: $archive"
+          done
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -304,6 +354,16 @@ jobs:
           merge-multiple: true
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
+      - name: Patch formula for PupkitShell (macOS)
+        run: |
+          for f in Formula/*.rb; do
+            [ -f "$f" ] || continue
+            if grep -q 'bin.install "pupkit"' "$f"; then
+              # Add PupkitShell install lines after the pupkit binary install
+              sed -i 's|bin.install "pupkit"|bin.install "pupkit"\n    bin.install "PupkitShell" if File.exist?("PupkitShell")\n    if File.directory?("PupkitShell_PupkitShell.bundle")\n      (prefix/"bin"/"PupkitShell_PupkitShell.bundle").install Dir["PupkitShell_PupkitShell.bundle/**/*"]\n    end|' "$f"
+              echo "Patched $f for PupkitShell"
+            fi
+          done
       - name: Commit formula files
         run: |
           git config --global user.name "${GITHUB_USER}"
