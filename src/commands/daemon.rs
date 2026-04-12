@@ -18,8 +18,12 @@ pub fn execute() -> Result<(), String> {
     }
 
     // 3. Launch PupkitShell GUI (macOS only, non-blocking)
-    if let Some(ref shell_path) = config.shell_binary_path {
-        shell_launcher::try_launch(shell_path);
+    let shell_path = config
+        .shell_binary_path
+        .clone()
+        .or_else(shell_launcher::ensure_available);
+    if let Some(ref path) = shell_path {
+        shell_launcher::try_launch(path);
     }
 
     // 4. Accept connections (blocking)
