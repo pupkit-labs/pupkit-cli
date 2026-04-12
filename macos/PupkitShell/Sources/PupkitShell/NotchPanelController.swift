@@ -613,14 +613,11 @@ struct IslandContentView: View {
 
     private var filteredAttentions: [AttentionCard] {
         guard let attentions = snapshot?.attentions else { return [] }
-        // Reverse to show newest first (daemon appends newest last)
-        let filtered: [AttentionCard]
         if let tab = selectedTab {
-            filtered = attentions.filter { $0.source == tab }
+            return attentions.filter { $0.source == tab }
         } else {
-            filtered = attentions
+            return attentions
         }
-        return filtered.reversed()
     }
 
     private var filteredSessions: [SessionListItem] {

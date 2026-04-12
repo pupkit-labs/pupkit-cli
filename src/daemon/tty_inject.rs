@@ -391,6 +391,8 @@ fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std:
             repeat with s in sessions of t
                 if tty of s is "{tty}" then
 {arrows}                    delay 0.1
+                    tell s to write text (character id 13) without newline
+                    delay 0.15
                     tell s to write text "{text}" without newline
                     delay 0.05
                     tell s to write text (character id 13) without newline
