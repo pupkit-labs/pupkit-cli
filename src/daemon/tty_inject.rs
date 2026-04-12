@@ -52,13 +52,16 @@ impl CopilotTtyStore {
 
         match entry.source {
             SourceKind::ClaudeCode => {
-                // Claude Code uses simple y/n text prompts
-                let text = match option_text {
-                    "allow" => "y",
-                    "deny" => "n",
-                    _ => option_text,
+                // Claude Code uses inquirer-style TUI list:
+                //   ❯ 1. Yes              (index 0 — default)
+                //     2. Yes, allow all    (index 1)
+                //     3. No               (index 2 — last)
+                let choice_index = match option_text {
+                    "allow" => 0,
+                    "deny" => entry.choices.len().saturating_sub(1).max(1),
+                    _ => 0,
                 };
-                inject_text(&entry.tty_path, text)
+                inject_choice(&entry.tty_path, choice_index)
                     .map_err(|e| format!("TTY inject failed: {e}"))?;
             }
             SourceKind::Codex => {
@@ -102,8 +105,8 @@ impl CopilotTtyStore {
 
         match entry.source {
             SourceKind::ClaudeCode => {
-                // Claude Code: direct text injection
-                inject_text(&entry.tty_path, text)
+                // Claude Code also uses TUI lists; navigate past choices then type
+                inject_freeform_text(&entry.tty_path, entry.choices.len(), text)
                     .map_err(|e| format!("TTY freeform inject failed: {e}"))?;
             }
             _ => {

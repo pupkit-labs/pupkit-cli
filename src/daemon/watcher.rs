@@ -236,10 +236,11 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
                         if let Some(path) = &jsonl_path {
                             if let Some(tty) = tty_inject::discover_tty_from_jsonl(path) {
                                 eprintln!("[watcher] TTY for {:?} approval: {}: {}", source, session_id, tty.display());
+                                // Claude Code TUI: Yes / Yes-all / No (3 options)
                                 daemon.copilot_ttys_mut().set(
                                     SessionId::new(&session_id),
                                     tty,
-                                    vec!["allow".into(), "deny".into()],
+                                    vec!["allow".into(), "allow_always".into(), "deny".into()],
                                     source.clone(),
                                 );
                             }

@@ -97,9 +97,9 @@ final class NotchPanelController {
             openIsland()
         }
 
-        // Auto-switch tab when new attention arrives for a different source
-        if hasNew, let newSource = currentAttentions.first(where: { newIds.contains($0.request_id) })?.source {
-            suggestedTab = newSource
+        // When new attention arrives, switch to ALL tab to show everything
+        if hasNew {
+            suggestedTab = "ALL"
         }
     }
 
@@ -543,7 +543,8 @@ struct IslandContentView: View {
         }
         .onChange(of: suggestedTab) { newTab in
             if let tab = newTab {
-                selectedTab = tab
+                // "ALL" maps to nil (show everything)
+                selectedTab = (tab == "ALL") ? nil : tab
             }
         }
     }
@@ -612,8 +613,14 @@ struct IslandContentView: View {
 
     private var filteredAttentions: [AttentionCard] {
         guard let attentions = snapshot?.attentions else { return [] }
-        guard let tab = selectedTab else { return attentions }
-        return attentions.filter { $0.source == tab }
+        // Reverse to show newest first (daemon appends newest last)
+        let filtered: [AttentionCard]
+        if let tab = selectedTab {
+            filtered = attentions.filter { $0.source == tab }
+        } else {
+            filtered = attentions
+        }
+        return filtered.reversed()
     }
 
     private var filteredSessions: [SessionListItem] {
