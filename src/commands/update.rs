@@ -62,6 +62,15 @@ pub fn execute() -> Result<(), String> {
         );
     }
 
+    // On macOS, also update PupkitShell from the release archive
+    #[cfg(target_os = "macos")]
+    {
+        let install_dir = plan.install_bin.parent().unwrap_or(&plan.install_bin);
+        if let Err(error) = update_pupkit_shell(install_dir) {
+            eprintln!("warning: PupkitShell update skipped: {error}");
+        }
+    }
+
     Ok(())
 }
 
@@ -426,6 +435,62 @@ fn sync_installed_binary(source: &Path, target: &Path) -> Result<(), String> {
     if let Ok(metadata) = fs::metadata(source) {
         let mode = metadata.permissions().mode() & 0o777;
         let _ = fs::set_permissions(target, fs::Permissions::from_mode(mode));
+    }
+
+    Ok(())
+}
+
+/// Download PupkitShell from the latest release archive and install alongside pupkit.
+#[cfg(target_os = "macos")]
+fn update_pupkit_shell(install_dir: &Path) -> Result<(), String> {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-apple-darwin"
+    };
+
+    let archive_url = format!(
+        "https://github.com/pupkit-labs/pupkit-cli/releases/latest/download/pupkit-{arch}.tar.xz"
+    );
+
+    let shell_target = install_dir.join("PupkitShell");
+    let bundle_target = install_dir.join("PupkitShell_PupkitShell.bundle");
+
+    let script = format!(
+        r#"
+        set -e
+        tmpdir=$(mktemp -d)
+        trap 'rm -rf "$tmpdir"' EXIT
+        curl -fsSL "{url}" | tar -xJ -C "$tmpdir"
+        inner=$(ls "$tmpdir" | head -1)
+        if [ -f "$tmpdir/$inner/PupkitShell" ]; then
+            cp "$tmpdir/$inner/PupkitShell" "{target}"
+            chmod +x "{target}"
+            if [ -d "$tmpdir/$inner/PupkitShell_PupkitShell.bundle" ]; then
+                rm -rf "{bundle}"
+                cp -R "$tmpdir/$inner/PupkitShell_PupkitShell.bundle" "{bundle}"
+            fi
+            echo "PupkitShell updated"
+        else
+            echo "PupkitShell not found in archive (non-fatal)" >&2
+        fi
+        "#,
+        url = archive_url,
+        target = shell_target.display(),
+        bundle = bundle_target.display(),
+    );
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| format!("failed to run PupkitShell update: {error}"))?;
+
+    if !status.success() {
+        return Err("PupkitShell download failed".to_string());
     }
 
     Ok(())
