@@ -4,3 +4,4 @@
 !/.github/workflows/
 !/.github/workflows/release.yml
 macos/PupkitShell/.build/
+nohup.out
