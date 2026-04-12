@@ -98,6 +98,7 @@ pub fn question_event(
         request_id,
         prompt,
         options,
+        allow_freeform: true,
     })
 }
 

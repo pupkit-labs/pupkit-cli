@@ -18,6 +18,7 @@ struct AttentionCard: Decodable {
     let status: ShellStatus
     let message: String
     let options: [String]
+    let allow_freeform: Bool
 }
 
 struct SessionListItem: Decodable {

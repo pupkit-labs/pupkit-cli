@@ -19,6 +19,7 @@ pub struct AttentionCard {
     pub status: SessionStatus,
     pub message: String,
     pub options: Vec<String>,
+    pub allow_freeform: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

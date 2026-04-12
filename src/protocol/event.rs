@@ -28,6 +28,8 @@ pub enum SessionEventPayload {
         request_id: RequestId,
         prompt: String,
         options: Vec<String>,
+        #[serde(default)]
+        allow_freeform: bool,
     },
     Completion {
         headline: String,

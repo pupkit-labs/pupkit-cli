@@ -456,6 +456,7 @@ fn parse_copilot_line(value: &Value, path: &Path) -> Option<SessionEvent> {
                             request_id: RequestId::new(request_id),
                             prompt: question,
                             options: choices,
+                            allow_freeform: true,
                         })
                         .with_occurred_at(occurred_at);
 
@@ -700,11 +701,13 @@ mod tests {
             request_id,
             prompt,
             options,
+            allow_freeform,
         } = &event.payload
         {
             assert_eq!(request_id.as_str(), "call-123");
             assert_eq!(prompt, "Which database?");
             assert_eq!(options, &["PostgreSQL", "MySQL", "SQLite"]);
+            assert!(*allow_freeform);
         } else {
             panic!("expected QuestionRequest payload");
         }

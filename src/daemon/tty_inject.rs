@@ -56,6 +56,26 @@ impl CopilotTtyStore {
 
         Ok(true)
     }
+
+    /// Inject a freeform text answer into the Copilot TTY.
+    ///
+    /// Navigates past all choices to the text input, types the text, then submits.
+    /// Returns Ok(true) if injection was performed, Ok(false) if no TTY entry found.
+    pub fn inject_freeform(
+        &mut self,
+        session_id: &SessionId,
+        text: &str,
+    ) -> Result<bool, String> {
+        let entry = match self.entries.remove(session_id) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+
+        inject_freeform_text(&entry.tty_path, entry.choices.len(), text)
+            .map_err(|e| format!("TTY freeform inject failed: {e}"))?;
+
+        Ok(true)
+    }
 }
 
 // MARK: - TTY Discovery
@@ -159,6 +179,64 @@ end tell"#,
     Ok(())
 }
 
+/// Inject freeform text by navigating past all choices to the text input area,
+/// typing the text, then pressing Enter.
+///
+/// In Copilot's ask_user TUI, the freeform input is below the choices list.
+/// We need `num_choices` down-arrows to get past all options to the text field.
+fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
+    let tty_str = tty_path.to_string_lossy();
+
+    // Build down-arrow commands to skip past all choices to the freeform input
+    let mut arrow_commands = String::new();
+    for _ in 0..num_choices {
+        arrow_commands.push_str(
+            "                    tell s to write text (character id 27) & \"[B\" without newline\n\
+             \x20                   delay 0.05\n",
+        );
+    }
+
+    // Escape the text for AppleScript string (double any backslashes and quotes)
+    let escaped_text = text.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let script = format!(
+        r#"tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if tty of s is "{tty}" then
+{arrows}                    delay 0.1
+                    tell s to write text "{text}" without newline
+                    delay 0.05
+                    tell s to write text (character id 13) without newline
+                    return "ok"
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return "session not found"
+end tell"#,
+        tty = tty_str,
+        arrows = arrow_commands,
+        text = escaped_text,
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+
+    let result = String::from_utf8_lossy(&output.stdout);
+    if result.trim() != "ok" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("iTerm2 session not found for {tty_str}: {result}"),
+        ));
+    }
+
+    Ok(())
+}
+
 // MARK: - Tests
 
 #[cfg(test)]
@@ -216,5 +294,25 @@ mod tests {
         let mut store = CopilotTtyStore::default();
         let sid = SessionId::new("unknown");
         assert_eq!(store.inject_answer(&sid, "whatever").unwrap(), false);
+        assert_eq!(store.inject_freeform(&sid, "hello").unwrap(), false);
+    }
+
+    #[test]
+    fn copilot_tty_store_inject_freeform() {
+        let mut store = CopilotTtyStore::default();
+        let sid = SessionId::new("freeform-session");
+
+        store.set(
+            sid.clone(),
+            PathBuf::from("/dev/null"),
+            vec!["A".into(), "B".into()],
+        );
+
+        // osascript won't find /dev/null — inject returns Err
+        let result = store.inject_freeform(&sid, "custom text");
+        assert!(result.is_err());
+
+        // Entry consumed
+        assert_eq!(store.inject_freeform(&sid, "anything").unwrap(), false);
     }
 }

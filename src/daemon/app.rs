@@ -126,6 +126,7 @@ impl PupkitDaemon {
                         kind: AttentionKind::Approval,
                         message: format!("{tool_name}: {tool_input_summary}"),
                         options: vec!["allow".to_string(), "deny".to_string()],
+                        allow_freeform: false,
                     });
                     wait_handle = Some(waiter);
                 }
@@ -135,6 +136,7 @@ impl PupkitDaemon {
                     request_id,
                     prompt,
                     options,
+                    allow_freeform,
                 } = event.payload
                 {
                     self.pending.cancel_session(&event.session_id);
@@ -151,6 +153,7 @@ impl PupkitDaemon {
                         kind: AttentionKind::Question,
                         message: prompt,
                         options,
+                        allow_freeform,
                     });
                     wait_handle = Some(waiter);
                 }
@@ -253,9 +256,18 @@ impl PupkitDaemon {
                 self.pending
                     .resolve_answer(&request_id, UserAnswer::Option { option_id })
             }
-            UiAction::AnswerText { request_id, text } => self
-                .pending
-                .resolve_answer(&request_id, UserAnswer::Text { value: text }),
+            UiAction::AnswerText { request_id, text } => {
+                let session_id = self.pending.session_for_request(&request_id);
+                if let Some(sid) = &session_id {
+                    match self.copilot_ttys.inject_freeform(sid, &text) {
+                        Ok(true) => eprintln!("[tty] injected freeform for session {}", sid.as_str()),
+                        Ok(false) => eprintln!("[tty] no TTY entry for session {}", sid.as_str()),
+                        Err(e) => eprintln!("[tty] freeform injection failed: {e}"),
+                    }
+                }
+                self.pending
+                    .resolve_answer(&request_id, UserAnswer::Text { value: text })
+            }
             UiAction::DismissCompletion { session_id } => {
                 self.completions
                     .retain(|item| item.session_id != session_id);
@@ -313,6 +325,7 @@ impl PupkitDaemon {
                 status: snapshot.status.clone(),
                 message: attention.message.clone(),
                 options: attention.options.clone(),
+                allow_freeform: attention.allow_freeform,
             })
         });
 

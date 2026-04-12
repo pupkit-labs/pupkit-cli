@@ -54,6 +54,8 @@ pub struct AttentionSnapshot {
     pub kind: AttentionKind,
     pub message: String,
     pub options: Vec<String>,
+    #[serde(default)]
+    pub allow_freeform: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

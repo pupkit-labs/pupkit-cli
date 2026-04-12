@@ -1,6 +1,15 @@
 import AppKit
 import SwiftUI
 
+// MARK: - KeyablePanel
+
+/// NSPanel subclass that can become the key window when needed (e.g., for TextField input).
+private class KeyablePanel: NSPanel {
+    var allowsKeyStatus = false
+
+    override var canBecomeKey: Bool { allowsKeyStatus }
+}
+
 // MARK: - Island State
 
 enum IslandStatus {
@@ -12,7 +21,7 @@ enum IslandStatus {
 
 @MainActor
 final class NotchPanelController {
-    private var panel: NSPanel?
+    private var panel: KeyablePanel?
     private var latestSnapshot: UiStateSnapshot?
     private var ipcClient: IPCClient?
     private var onStateUpdate: ((UiStateSnapshot) -> Void)?
@@ -30,7 +39,7 @@ final class NotchPanelController {
         self.onStateUpdate = onStateUpdate
         let screen = targetScreen()
         let maxSize = panelMaxSize(on: screen)
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: maxSize.width, height: maxSize.height),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -93,6 +102,15 @@ final class NotchPanelController {
         islandStatus = .opened
         panel?.ignoresMouseEvents = false
         panel?.acceptsMouseMovedEvents = true
+
+        // Enable key window status if there's a freeform text input
+        let needsKey = latestSnapshot?.top_attention?.allow_freeform == true
+            && latestSnapshot?.top_attention?.status == .waitingQuestion
+        panel?.allowsKeyStatus = needsKey
+        if needsKey {
+            panel?.makeKeyAndOrderFront(nil)
+        }
+
         updateView()
     }
 
@@ -101,6 +119,7 @@ final class NotchPanelController {
         islandStatus = .closed
         panel?.ignoresMouseEvents = true
         panel?.acceptsMouseMovedEvents = false
+        panel?.allowsKeyStatus = false
         updateView()
     }
 
@@ -336,6 +355,7 @@ struct IslandContentView: View {
 
     @State private var isHovering = false
     @State private var measuredContentHeight: CGFloat = 80
+    @State private var freeformText: String = ""
 
     private var hasAttention: Bool { snapshot?.top_attention != nil }
     private var hasAnySessions: Bool { (snapshot?.sessions.count ?? 0) > 0 }
@@ -552,20 +572,56 @@ struct IslandContentView: View {
             }
 
         case .waitingQuestion:
-            FlowLayout(spacing: 6) {
-                ForEach(attention.options, id: \.self) { option in
-                    Button {
-                        onAction(.answerOption(requestId: attention.request_id, optionId: option))
-                    } label: {
-                        Text(option)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(Color.blue, in: Capsule())
+            VStack(spacing: 8) {
+                FlowLayout(spacing: 6) {
+                    ForEach(attention.options, id: \.self) { option in
+                        Button {
+                            onAction(.answerOption(requestId: attention.request_id, optionId: option))
+                        } label: {
+                            Text(option)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(Color.blue, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                }
+
+                if attention.allow_freeform {
+                    HStack(spacing: 6) {
+                        TextField("Type a response…", text: $freeformText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                            .onSubmit {
+                                guard !freeformText.isEmpty else { return }
+                                onAction(.answerText(requestId: attention.request_id, text: freeformText))
+                                freeformText = ""
+                            }
+
+                        Button {
+                            guard !freeformText.isEmpty else { return }
+                            onAction(.answerText(requestId: attention.request_id, text: freeformText))
+                            freeformText = ""
+                        } label: {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white)
+                                .padding(6)
+                                .background(
+                                    freeformText.isEmpty ? Color.gray.opacity(0.4) : Color.green,
+                                    in: Circle()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(freeformText.isEmpty)
+                    }
                 }
             }
 
