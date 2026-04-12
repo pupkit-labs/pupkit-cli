@@ -102,8 +102,14 @@ impl PupkitDaemon {
 
         match event.kind {
             SessionEventKind::SessionStarted | SessionEventKind::SessionUpdated => {
-                snapshot.status = SessionStatus::Running;
-                snapshot.attention = None;
+                // Don't clear attention if we're waiting for user input
+                if !matches!(
+                    snapshot.status,
+                    SessionStatus::WaitingApproval | SessionStatus::WaitingQuestion
+                ) {
+                    snapshot.status = SessionStatus::Running;
+                    snapshot.attention = None;
+                }
             }
             SessionEventKind::ApprovalRequested => {
                 if let SessionEventPayload::ApprovalRequest {
