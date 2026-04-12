@@ -52,8 +52,7 @@ final class NotchPanelController {
             isOpened: false,
             closedNotchWidth: screen.notchSize.width,
             closedNotchHeight: screen.islandClosedHeight,
-            onAction: { _ in },
-            onClose: { }
+            onAction: { _ in }
         ))
         hostView.wantsLayer = true
         hostView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -118,8 +117,7 @@ final class NotchPanelController {
                 isOpened: isOpened,
                 closedNotchWidth: screen.notchSize.width,
                 closedNotchHeight: screen.islandClosedHeight,
-                onAction: { [weak self] action in self?.handleAction(action) },
-                onClose: { [weak self] in self?.closeIsland() }
+                onAction: { [weak self] action in self?.handleAction(action) }
             )
         }
 
@@ -283,7 +281,6 @@ struct IslandContentView: View {
     let closedNotchWidth: CGFloat
     let closedNotchHeight: CGFloat
     let onAction: (UiAction) -> Void
-    let onClose: () -> Void
 
     @State private var isHovering = false
 
@@ -381,31 +378,12 @@ struct IslandContentView: View {
     @ViewBuilder
     private var headerRow: some View {
         if isOpened {
-            HStack {
-                HStack(spacing: 6) {
-                    Text("🐶")
-                        .font(.system(size: 14))
-                    Text("Pupkit")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                Spacer()
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
+            // Empty header — content starts directly below notch
+            Color.clear
         } else {
             HStack(spacing: 0) {
                 if hasAnySessions || hasAttention {
                     HStack(spacing: 4) {
-                        Text("🐶")
-                            .font(.system(size: 12))
                         if hasAttention {
                             Circle()
                                 .fill(Color.orange)
@@ -416,7 +394,7 @@ struct IslandContentView: View {
                                 .frame(width: 6, height: 6)
                         }
                     }
-                    .frame(width: 36)
+                    .frame(width: 20)
                 }
 
                 Spacer()
