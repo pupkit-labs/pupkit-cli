@@ -273,14 +273,14 @@ fn find_tty_for_pid(pid: u32) -> Option<PathBuf> {
 fn inject_text(tty_path: &Path, text: &str) -> std::io::Result<()> {
     let tty_str = tty_path.to_string_lossy();
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    // `write text` appends a newline (= pressing Enter) by default
     let script = format!(
         r#"tell application "iTerm2"
     repeat with w in windows
         repeat with t in tabs of w
             repeat with s in sessions of t
                 if tty of s is "{tty}" then
-                    tell s to write text "{text}" without newline
-                    tell s to write text (character id 13) without newline
+                    tell s to write text "{text}"
                     return "ok"
                 end if
             end repeat

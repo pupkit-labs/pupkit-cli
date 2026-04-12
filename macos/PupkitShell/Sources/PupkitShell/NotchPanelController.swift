@@ -26,6 +26,12 @@ final class NotchPanelController {
     private var ipcClient: IPCClient?
     private var onStateUpdate: ((UiStateSnapshot) -> Void)?
     private var islandStatus: IslandStatus = .closed
+    /// When true, the island was opened programmatically (new attention arrived)
+    /// and should stay open for at least `programmaticMinDisplayTime` seconds.
+    private var programmaticOpen = false
+    private var programmaticOpenTime: Date?
+    /// When a new attention arrives, this holds the source to auto-switch to.
+    private var suggestedTab: String?
     private var globalMoveMonitor: Any?
     private var globalClickMonitor: Any?
     private var hoverTimer: DispatchWorkItem?
@@ -61,6 +67,7 @@ final class NotchPanelController {
             isOpened: false,
             closedNotchWidth: screen.notchSize.width,
             closedNotchHeight: screen.islandClosedHeight,
+            suggestedTab: nil,
             onAction: { _ in }
         ))
         hostView.wantsLayer = true
@@ -80,10 +87,19 @@ final class NotchPanelController {
         latestSnapshot = snapshot
         updateView()
 
-        let currentAttentionIds = Set(snapshot?.attentions.map(\.request_id) ?? [])
-        let hasNew = !currentAttentionIds.subtracting(previousAttentionIds).isEmpty
+        let currentAttentions = snapshot?.attentions ?? []
+        let currentAttentionIds = Set(currentAttentions.map(\.request_id))
+        let newIds = currentAttentionIds.subtracting(previousAttentionIds)
+        let hasNew = !newIds.isEmpty
         if hasNew && islandStatus == .closed {
+            programmaticOpen = true
+            programmaticOpenTime = Date()
             openIsland()
+        }
+
+        // Auto-switch tab when new attention arrives for a different source
+        if hasNew, let newSource = currentAttentions.first(where: { newIds.contains($0.request_id) })?.source {
+            suggestedTab = newSource
         }
     }
 
@@ -122,6 +138,8 @@ final class NotchPanelController {
     private func closeIsland() {
         cancelTimers()
         islandStatus = .closed
+        programmaticOpen = false
+        programmaticOpenTime = nil
         panel?.ignoresMouseEvents = true
         panel?.acceptsMouseMovedEvents = false
         panel?.allowsKeyStatus = false
@@ -135,12 +153,17 @@ final class NotchPanelController {
         let screen = targetScreen()
         let isOpened = islandStatus == .opened
 
+        // Consume the suggestedTab once per update
+        let tabHint = suggestedTab
+        suggestedTab = nil
+
         if let hostView = panel.contentView as? NSHostingView<IslandContentView> {
             hostView.rootView = IslandContentView(
                 snapshot: latestSnapshot,
                 isOpened: isOpened,
                 closedNotchWidth: screen.notchSize.width,
                 closedNotchHeight: screen.islandClosedHeight,
+                suggestedTab: tabHint,
                 onAction: { [weak self] action in self?.handleAction(action) }
             )
         }
@@ -207,8 +230,18 @@ final class NotchPanelController {
             cancelOpenTimer()
         }
         if islandStatus == .opened && !isPointInExpandedArea(loc) {
+            // If opened programmatically, enforce minimum display time (5s)
+            // so user can switch desktops back to interact
+            if programmaticOpen, let openTime = programmaticOpenTime {
+                let elapsed = Date().timeIntervalSince(openTime)
+                if elapsed < 5.0 {
+                    return  // don't schedule close yet
+                }
+            }
             scheduleClose()
         } else if islandStatus == .opened && isPointInExpandedArea(loc) {
+            // User moved mouse into panel — no longer a programmatic-only open
+            programmaticOpen = false
             cancelCloseTimer()
         }
     }
@@ -216,6 +249,7 @@ final class NotchPanelController {
     private func handleMouseDown(_ loc: NSPoint) {
         if islandStatus == .closed && isPointInClosedArea(loc) {
             cancelTimers()
+            programmaticOpen = false
             openIsland()
         } else if islandStatus == .opened && !isPointInExpandedArea(loc) {
             closeIsland()
@@ -347,6 +381,8 @@ struct IslandContentView: View {
     let isOpened: Bool
     let closedNotchWidth: CGFloat
     let closedNotchHeight: CGFloat
+    /// Hint from controller to auto-switch tab when new attention arrives.
+    let suggestedTab: String?
     let onAction: (UiAction) -> Void
 
     @State private var isHovering = false
@@ -504,6 +540,11 @@ struct IslandContentView: View {
         .animation(.spring(response: 0.38, dampingFraction: 0.8), value: isHovering)
         .onHover { hovering in
             isHovering = hovering
+        }
+        .onChange(of: suggestedTab) { newTab in
+            if let tab = newTab {
+                selectedTab = tab
+            }
         }
     }
 
