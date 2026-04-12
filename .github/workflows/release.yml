@@ -326,6 +326,9 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
+          # Delete existing release if re-running (idempotent)
+          gh release delete "${{ needs.plan.outputs.tag }}" --yes 2>/dev/null || true
+
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
   publish-homebrew-formula:
@@ -356,10 +359,27 @@ jobs:
       # so we need to find releases with a *.rb file, and publish with that filename.
       - name: Patch formula for PupkitShell (macOS)
         run: |
+          # 1. Fix checksums for macOS archives (modified by PupkitShell injection)
+          for sha_file in Formula/pupkit-*-apple-darwin*.tar.xz.sha256; do
+            [ -f "$sha_file" ] || continue
+            CORRECT_SHA=$(cat "$sha_file" | tr -d '[:space:]')
+            ARCHIVE_NAME=$(basename "${sha_file%.sha256}")
+            for f in Formula/*.rb; do
+              [ -f "$f" ] || continue
+              # Replace sha256 on the line following the URL that contains this archive
+              awk -v url="$ARCHIVE_NAME" -v sha="$CORRECT_SHA" '
+                /url / && index($0, url) { found=1; print; next }
+                found && /sha256/ { sub(/"[a-f0-9]+"/, "\"" sha "\""); found=0 }
+                { print }
+              ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+              echo "Updated checksum for $ARCHIVE_NAME in $f"
+            done
+          done
+
+          # 2. Add PupkitShell install lines
           for f in Formula/*.rb; do
             [ -f "$f" ] || continue
             if grep -q 'bin.install "pupkit"' "$f"; then
-              # Add PupkitShell install lines after the pupkit binary install
               sed -i 's|bin.install "pupkit"|bin.install "pupkit"\n    bin.install "PupkitShell" if File.exist?("PupkitShell")\n    if File.directory?("PupkitShell_PupkitShell.bundle")\n      (prefix/"bin"/"PupkitShell_PupkitShell.bundle").install Dir["PupkitShell_PupkitShell.bundle/**/*"]\n    end|' "$f"
               echo "Patched $f for PupkitShell"
             fi

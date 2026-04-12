@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.0 - 2026-04-13
+
+### Added / 新增
+
+- **PupkitShell bundling**: daemon auto-discovers and launches PupkitShell (macOS Dynamic Island overlay) on startup. / **PupkitShell 绑定**：daemon 启动时自动发现并启动 PupkitShell（macOS 灵动岛叠加层）。
+- **Auto-download**: if PupkitShell is not found locally, daemon downloads it from the latest GitHub release. / **自动下载**：如果本地找不到 PupkitShell，daemon 会从最新 GitHub release 自动下载。
+- **Welcome auto-starts daemon**: running `pupkit` (no args) now auto-starts the daemon in background if not already running. / **Welcome 自动启动 daemon**：运行 `pupkit`（无参数）时，如果 daemon 未在运行，会自动在后台启动。
+- **`pupkit update` includes PupkitShell**: on macOS, the update command also downloads PupkitShell from the release archive. / **`pupkit update` 包含 PupkitShell**：macOS 上 update 命令同时从 release archive 下载 PupkitShell。
+- **CI integration**: release workflow builds PupkitShell with Swift and injects it into macOS archives; Homebrew formula patched to install PupkitShell. / **CI 集成**：发布流程使用 Swift 构建 PupkitShell 并注入 macOS archive；Homebrew formula 自动 patch 以安装 PupkitShell。
+
+### Changed / 改进
+
+- Refactored `serve_forever()` into `bind()` + `accept_loop()` for orchestration. / 将 `serve_forever()` 拆分为 `bind()` + `accept_loop()` 以支持编排逻辑。
+- `DaemonConfig` now includes `shell_binary_path` with auto-resolution (env var → sibling binary). / `DaemonConfig` 新增 `shell_binary_path`，支持自动解析（环境变量 → 同目录二进制）。
+
+### Docs / 文档
+
+- Updated README (EN/CN) with daemon, PupkitShell, and auto-start documentation. / 更新中英文 README，新增 daemon、PupkitShell 和自动启动文档。
+- Expanded copilot-instructions.md with daemon architecture and shell_launcher docs. / 扩展 copilot-instructions.md，增加 daemon 架构和 shell_launcher 文档。
+
 ## 0.0.6 - 2026-04-07
 
 ### Changed / 改进

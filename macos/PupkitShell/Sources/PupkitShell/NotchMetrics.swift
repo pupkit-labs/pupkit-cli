@@ -4,8 +4,22 @@ import CoreGraphics
 // MARK: - NSScreen Notch Detection
 
 extension NSScreen {
+    /// True only for the built-in display (MacBook screen), not external monitors.
+    var isBuiltIn: Bool {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        guard let screenNumber = deviceDescription[key] as? CGDirectDisplayID else { return false }
+        return CGDisplayIsBuiltin(screenNumber) != 0
+    }
+
+    /// True only when the screen has a physical camera notch (auxiliary areas
+    /// flanking the notch exist). A menu-bar safe area alone does NOT qualify.
+    var hasNotch: Bool {
+        guard safeAreaInsets.top > 0 else { return false }
+        return auxiliaryTopLeftArea != nil || auxiliaryTopRightArea != nil
+    }
+
     var notchSize: CGSize {
-        guard safeAreaInsets.top > 0 else {
+        guard hasNotch else {
             return CGSize(width: 224, height: 38)
         }
         let notchHeight = safeAreaInsets.top
@@ -15,12 +29,8 @@ extension NSScreen {
         return CGSize(width: notchWidth, height: notchHeight)
     }
 
-    var hasNotch: Bool {
-        safeAreaInsets.top > 0
-    }
-
     var islandClosedHeight: CGFloat {
-        if safeAreaInsets.top > 0 {
+        if hasNotch {
             return safeAreaInsets.top
         }
         let reserved = max(0, frame.maxY - visibleFrame.maxY)
@@ -36,5 +46,5 @@ enum IslandMetrics {
     static let openedShadowBottomInset: CGFloat = 22
     static let closedHoverScale: CGFloat = 1.028
     static let hoverOpenDelay: TimeInterval = 0.3
-    static let hoverCloseDelay: TimeInterval = 0.5
+    static let hoverCloseDelay: TimeInterval = 0.3
 }

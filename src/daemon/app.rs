@@ -325,6 +325,15 @@ impl PupkitDaemon {
                     .retain(|item| item.session_id != session_id);
                 None
             }
+            UiAction::DismissAttention { request_id } => {
+                self.registry.dismiss_attention_by_request(request_id.as_str());
+                self.pending.abandon_request(&request_id);
+                None
+            }
+            UiAction::ClearAttentions { source } => {
+                self.registry.clear_attentions(source.as_deref());
+                None
+            }
         };
 
         let resolved_request_id = decision.as_ref().and_then(|decision| match decision {
@@ -356,6 +365,7 @@ impl PupkitDaemon {
                 title: snapshot.title.clone(),
                 status: snapshot.status.clone(),
                 summary: snapshot.last_summary.clone(),
+                cwd: snapshot.cwd.clone(),
                 last_updated_at: snapshot.last_updated_at,
             })
             .collect();
@@ -630,5 +640,52 @@ mod tests {
 
         let snap = daemon.state_snapshot();
         assert_eq!(snap.sessions[0].title, "Copilot · custom-name");
+    }
+
+    #[test]
+    fn approval_event_does_not_overwrite_cwd_title() {
+        let mut daemon = PupkitDaemon::for_config(temp_config("approval-title"));
+        // Session starts with a CWD-derived title
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::Copilot,
+                    SessionId::new("cp-preserve"),
+                    SessionEventKind::SessionStarted,
+                )
+                .with_cwd("/home/dev/my-project".to_string()),
+            )
+            .unwrap();
+        let snap = daemon.state_snapshot();
+        assert_eq!(snap.sessions[0].title, "Copilot · my-project");
+
+        // An ApprovalRequested event arrives (no title, no cwd — just like the real watcher)
+        daemon
+            .ingest_event(
+                SessionEvent::new(
+                    SourceKind::Copilot,
+                    SessionId::new("cp-preserve"),
+                    SessionEventKind::ApprovalRequested,
+                )
+                .with_summary("bash: rm -rf /".to_string())
+                .with_payload(SessionEventPayload::ApprovalRequest {
+                    request_id: RequestId::new("approve-1"),
+                    tool_name: "bash".to_string(),
+                    tool_input_summary: "rm -rf /".to_string(),
+                }),
+            )
+            .unwrap();
+
+        // Title must still contain the project name, not a generic fallback
+        let snap = daemon.state_snapshot();
+        assert_eq!(
+            snap.sessions[0].title, "Copilot · my-project",
+            "approval event must not overwrite CWD-derived title"
+        );
+        assert_eq!(
+            snap.sessions[0].cwd.as_deref(),
+            Some("/home/dev/my-project"),
+            "cwd must be preserved through approval events"
+        );
     }
 }

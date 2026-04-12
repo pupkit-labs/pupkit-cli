@@ -27,6 +27,7 @@ struct SessionListItem: Decodable {
     let title: String
     let status: ShellStatus
     let summary: String?
+    let cwd: String?
 }
 
 struct CompletionItem: Decodable {
@@ -60,6 +61,8 @@ enum UiAction: Encodable {
     case answerOption(requestId: String, optionId: String)
     case answerText(requestId: String, text: String)
     case dismissCompletion(sessionId: String)
+    case dismissAttention(requestId: String)
+    case clearAttentions(source: String?)
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
@@ -74,6 +77,10 @@ enum UiAction: Encodable {
             try container.encode(["AnswerText": AnswerTextPayload(request_id: requestId, text: text)])
         case .dismissCompletion(let sessionId):
             try container.encode(["DismissCompletion": DismissPayload(session_id: sessionId)])
+        case .dismissAttention(let requestId):
+            try container.encode(["DismissAttention": DismissAttentionPayload(request_id: requestId)])
+        case .clearAttentions(let source):
+            try container.encode(["ClearAttentions": ClearAttentionsPayload(source: source)])
         }
     }
 }
@@ -83,6 +90,8 @@ private struct DenyPayload: Encodable { let request_id: String }
 private struct AnswerOptionPayload: Encodable { let request_id: String; let option_id: String }
 private struct AnswerTextPayload: Encodable { let request_id: String; let text: String }
 private struct DismissPayload: Encodable { let session_id: String }
+private struct DismissAttentionPayload: Encodable { let request_id: String }
+private struct ClearAttentionsPayload: Encodable { let source: String? }
 
 // MARK: - ClientRequest (Encodable, sent to daemon)
 

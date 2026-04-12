@@ -73,6 +73,7 @@ impl FileCursors {
 /// Tools that typically require user approval in Copilot CLI.
 const APPROVAL_TOOLS: &[&str] = &[
     "bash", "edit", "create", "write_bash", "stop_bash",
+    "view", "glob", "grep", "apply_patch",
 ];
 
 /// Tracks tool calls from `assistant.message` that haven't been started yet.
@@ -243,18 +244,11 @@ fn watcher_loop(daemon: Arc<Mutex<PupkitDaemon>>, home: PathBuf) {
             // Emit ApprovalRequested events for stale pending tool calls
             for (session_id, source, tool_name, summary, jsonl_path) in approvals {
                 log_info!("[watcher] approval needed: {} ({}) in session {} [{:?}]", tool_name, summary, session_id, source);
-                let title = match &source {
-                    SourceKind::ClaudeCode => "Claude Code",
-                    SourceKind::Codex => "Codex",
-                    SourceKind::Copilot => "Copilot Chat",
-                    SourceKind::Unknown => "AI Tool",
-                };
                 let event = SessionEvent::new(
                     source.clone(),
                     SessionId::new(&session_id),
                     SessionEventKind::ApprovalRequested,
                 )
-                .with_title(title)
                 .with_summary(format!("{tool_name}: {summary}"))
                 .with_payload(SessionEventPayload::ApprovalRequest {
                     request_id: RequestId::new(format!("approve-{}", current_epoch_secs())),

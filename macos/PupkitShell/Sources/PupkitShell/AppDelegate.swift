@@ -9,12 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Close any auto-opened Settings window (SwiftUI may spawn one)
+        closeSettingsWindows()
         statusItemController.start(ipcClient: ipcClient, notchController: notchController)
         notchController.configure(ipcClient: ipcClient) { [weak self] updatedState in
             self?.statusItemController.apply(snapshot: updatedState)
         }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 await self?.refreshState()
             }
         }
@@ -36,5 +38,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItemController.apply(error: error.localizedDescription)
             notchController.apply(snapshot: nil)
         }
+    }
+
+    /// Close any SwiftUI-managed Settings windows that auto-open on launch or reactivation.
+    private func closeSettingsWindows() {
+        for window in NSApp.windows where window.title.lowercased().contains("setting") || window.className.contains("Settings") {
+            window.close()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        closeSettingsWindows()
     }
 }

@@ -12,7 +12,7 @@ final class StatusItemController: NSObject {
         self.notchController = notchController
         self.ipcClient = ipcClient
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let logoURL = Bundle.module.url(forResource: "pupkit_logo", withExtension: "png"),
+        if let logoURL = Bundle.pupkitResources?.url(forResource: "pupkit_logo", withExtension: "png"),
            let img = NSImage(contentsOf: logoURL) {
             img.size = NSSize(width: 20, height: 20)
             item.button?.image = img
@@ -31,7 +31,7 @@ final class StatusItemController: NSObject {
         latestSnapshot = snapshot
         let attentionCount = snapshot.attentions.count
         if attentionCount > 0 {
-            statusItem?.button?.title = "·\(attentionCount)"
+            statusItem?.button?.title = " \(attentionCount)"
         } else {
             statusItem?.button?.title = ""
         }

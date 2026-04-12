@@ -41,6 +41,31 @@ impl SessionRegistry {
         self.sessions.values().cloned().collect()
     }
 
+    pub fn dismiss_attention_by_request(&mut self, request_id: &str) {
+        for session in self.sessions.values_mut() {
+            if session
+                .attention
+                .as_ref()
+                .is_some_and(|a| a.request_id.as_str() == request_id)
+            {
+                session.attention = None;
+                break;
+            }
+        }
+    }
+
+    pub fn clear_attentions(&mut self, source: Option<&str>) {
+        for session in self.sessions.values_mut() {
+            let matches = match source {
+                None => true,
+                Some(s) => format!("{:?}", session.source) == s,
+            };
+            if matches {
+                session.attention = None;
+            }
+        }
+    }
+
     /// Remove expired sessions and mark long-idle Running sessions as Stale.
     pub fn cleanup_expired(&mut self, now_secs: u64) {
         // First pass: mark long-idle Running sessions as Stale

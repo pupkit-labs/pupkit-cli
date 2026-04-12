@@ -29,6 +29,7 @@ pub struct SessionListItem {
     pub title: String,
     pub status: SessionStatus,
     pub summary: Option<String>,
+    pub cwd: Option<String>,
     pub last_updated_at: u64,
 }
 
@@ -84,6 +85,12 @@ pub enum UiAction {
     },
     DismissCompletion {
         session_id: SessionId,
+    },
+    DismissAttention {
+        request_id: RequestId,
+    },
+    ClearAttentions {
+        source: Option<String>,
     },
 }
 

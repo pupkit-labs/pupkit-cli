@@ -34,6 +34,7 @@ final class NotchPanelController {
     private var suggestedTab: String?
     private var globalMoveMonitor: Any?
     private var globalClickMonitor: Any?
+    private var localMoveMonitor: Any?
     private var hoverTimer: DispatchWorkItem?
     private var closeTimer: DispatchWorkItem?
     private var notchRect: NSRect = .zero
@@ -213,7 +214,11 @@ final class NotchPanelController {
     }
 
     private func targetScreen() -> NSScreen {
-        NSScreen.screens.first(where: { $0.hasNotch }) ?? NSScreen.main ?? NSScreen.screens[0]
+        // Prefer built-in display (has the physical notch on MacBooks)
+        if let builtIn = NSScreen.screens.first(where: { $0.isBuiltIn && $0.hasNotch }) {
+            return builtIn
+        }
+        return NSScreen.screens.first(where: { $0.hasNotch }) ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
     // MARK: - Mouse event monitoring
@@ -223,6 +228,15 @@ final class NotchPanelController {
             Task { @MainActor in
                 self?.handleMouseMoved(NSEvent.mouseLocation)
             }
+        }
+        // Local monitor covers mouse moves INSIDE the panel (global monitor only
+        // fires for events delivered to OTHER apps). Without this, mouse leaving
+        // the visible island but still inside the panel frame goes undetected.
+        localMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            Task { @MainActor in
+                self?.handleMouseMoved(NSEvent.mouseLocation)
+            }
+            return event
         }
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             Task { @MainActor in
@@ -243,7 +257,7 @@ final class NotchPanelController {
             // so user can switch desktops back to interact
             if programmaticOpen, let openTime = programmaticOpenTime {
                 let elapsed = Date().timeIntervalSince(openTime)
-                if elapsed < 5.0 {
+                if elapsed < 3.0 {
                     return  // don't schedule close yet
                 }
             }
@@ -271,7 +285,18 @@ final class NotchPanelController {
 
     private func isPointInExpandedArea(_ pt: NSPoint) -> Bool {
         guard let panel else { return false }
-        return panel.frame.contains(pt)
+        let frame = panel.frame
+        // Inset by shadow/padding so detection matches the visible island, not the full panel
+        let insetH = IslandMetrics.openedShadowHorizontalInset + 14
+        let insetB = IslandMetrics.openedShadowBottomInset
+        let tolerance: CGFloat = 8
+        let visualRect = NSRect(
+            x: frame.minX + insetH - tolerance,
+            y: frame.minY + insetB - tolerance,
+            width: frame.width - (insetH - tolerance) * 2,
+            height: frame.height - insetB + tolerance
+        )
+        return visualRect.contains(pt)
     }
 
     // MARK: - Timers
@@ -399,6 +424,10 @@ struct IslandContentView: View {
     @State private var isHovering = false
     @State private var freeformTexts: [String: String] = [:]
     @State private var selectedTab: String? = nil  // nil = "All"
+    @State private var isPulsing = false
+    @State private var ripple1 = false
+    @State private var ripple2 = false
+    @State private var ripple3 = false
     @FocusState private var focusedField: String?
 
     private var hasAttention: Bool { !(snapshot?.attentions.isEmpty ?? true) }
@@ -415,8 +444,9 @@ struct IslandContentView: View {
             }
             let spacing = CGFloat(max(0, attentions.count - 1)) * 12
             let scrollContent = min(cardsHeight + spacing, 480)
+            let clearAllHeight: CGFloat = 22  // Clear all button row
             // 22 = top padding(8) + VStack spacing(8) + bottom padding(6)
-            return tabBarHeight + scrollContent + 22
+            return tabBarHeight + clearAllHeight + scrollContent + 22
         } else {
             // Session info or empty state
             let activeSources = Set(snapshot?.sessions.map(\.source) ?? [])
@@ -548,6 +578,8 @@ struct IslandContentView: View {
             if isOpened {
                 usageStrip(notchWidth: closedNotchWidth, totalWidth: layoutWidth)
                     .frame(height: closedNotchHeight)
+            } else {
+                closedFlankingIndicators
             }
         }
         .scaleEffect(isOpened ? 1 : (isHovering ? IslandMetrics.closedHoverScale : 1), anchor: .top)
@@ -558,8 +590,8 @@ struct IslandContentView: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .onChange(of: suggestedTab) { newTab in
-            if let tab = newTab {
+        .onChange(of: suggestedTab) { oldValue, newValue in
+            if let tab = newValue {
                 // "ALL" maps to nil (show everything)
                 selectedTab = (tab == "ALL") ? nil : tab
             }
@@ -570,36 +602,91 @@ struct IslandContentView: View {
 
     @ViewBuilder
     private var headerRow: some View {
-        if isOpened {
-            // Empty header — content starts directly below notch
-            Color.clear
-        } else {
+        // Closed state: indicators are rendered as flanking overlays (see closedFlankingIndicators)
+        // to avoid being obscured by the macOS system notch mask on built-in displays.
+        Color.clear
+    }
+
+    /// Indicators that flank the physical notch in closed state — positioned outside the
+    /// clipped notch shape so they remain visible on built-in displays where macOS renders
+    /// a system-level black mask over the camera notch area.
+    @ViewBuilder
+    private var closedFlankingIndicators: some View {
+        if !isOpened && (hasAnySessions || hasAttention) {
             HStack(spacing: 0) {
-                if hasAnySessions || hasAttention {
-                    HStack(spacing: 4) {
-                        if hasAttention {
-                            Circle()
-                                .fill(Color.orange)
-                                .frame(width: 6, height: 6)
-                        } else {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 6, height: 6)
-                        }
+                // Left indicator: bell with pulse when attention, green dot otherwise
+                ZStack {
+                    if hasAttention {
+                        // Ripple wave 1
+                        Circle()
+                            .stroke(Color.orange.opacity(0.6), lineWidth: 1)
+                            .frame(width: 12, height: 12)
+                            .scaleEffect(ripple1 ? 3.0 : 1.0)
+                            .opacity(ripple1 ? 0 : 0.6)
+                        // Ripple wave 2 (delayed)
+                        Circle()
+                            .stroke(Color.orange.opacity(0.5), lineWidth: 1)
+                            .frame(width: 12, height: 12)
+                            .scaleEffect(ripple2 ? 3.0 : 1.0)
+                            .opacity(ripple2 ? 0 : 0.5)
+                        // Ripple wave 3 (more delayed)
+                        Circle()
+                            .stroke(Color.orange.opacity(0.4), lineWidth: 1)
+                            .frame(width: 12, height: 12)
+                            .scaleEffect(ripple3 ? 3.0 : 1.0)
+                            .opacity(ripple3 ? 0 : 0.4)
+                        // Bell icon with gentle swing
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.orange)
+                            .rotationEffect(.degrees(isPulsing ? 5 : -5), anchor: .top)
+                    } else {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
                     }
-                    .frame(width: 20)
+                }
+                .frame(width: 22, height: 18)
+                .task(id: hasAttention) {
+                    isPulsing = false
+                    ripple1 = false; ripple2 = false; ripple3 = false
+                    guard hasAttention else { return }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    // Bell swing
+                    withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                        isPulsing = true
+                    }
+                    // Staggered ripples — each loops independently
+                    withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                        ripple1 = true
+                    }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                        ripple2 = true
+                    }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                        ripple3 = true
+                    }
                 }
 
                 Spacer()
 
+                // Right indicator: session count
                 if hasAnySessions {
                     Text("\(snapshot?.sessions.count ?? 0)")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .frame(width: 28)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule().fill(Color.black.opacity(0.65))
+                        )
                 }
             }
-            .padding(.horizontal, 8)
+            .frame(width: closedNotchWidth + 56)
+            .frame(height: closedNotchHeight)
+            .transition(.opacity)
         }
     }
 
@@ -892,6 +979,29 @@ struct IslandContentView: View {
 
             let attentions = filteredAttentions
             if !attentions.isEmpty {
+                // Clear all button for current tab
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        onAction(.clearAttentions(source: selectedTab))
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 10))
+                            Text("Clear all")
+                                .font(Self.monoSmall)
+                        }
+                        .foregroundStyle(.white.opacity(0.35))
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                }
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(Array(attentions.enumerated()), id: \.element.request_id) { _, attention in
@@ -943,6 +1053,18 @@ struct IslandContentView: View {
                     .font(Self.monoBold)
                     .foregroundStyle(.white.opacity(0.50))
                 Spacer()
+                // Dismiss button
+                Button(action: {
+                    onAction(.dismissAttention(requestId: attention.request_id))
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(.white.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
             }
             Text(attention.message)
                 .font(Self.mono)
