@@ -787,13 +787,13 @@ struct IslandContentView: View {
         switch attention.status {
         case .waitingApproval:
             HStack(spacing: 10) {
-                terminalButton("allow", color: Color(red: 0.30, green: 0.75, blue: 0.40), primary: true) {
+                terminalButton("allow", color: Color(red: 0.35, green: 0.82, blue: 0.48), primary: true) {
                     onAction(.approve(requestId: attention.request_id, always: false))
                 }
-                terminalButton("always", color: Color(red: 0.30, green: 0.75, blue: 0.40), primary: false) {
+                terminalButton("always", color: Color(red: 0.35, green: 0.82, blue: 0.48), primary: false) {
                     onAction(.approve(requestId: attention.request_id, always: true))
                 }
-                terminalButton("deny", color: Color(red: 0.85, green: 0.30, blue: 0.30), primary: false) {
+                terminalButton("deny", color: Color(red: 0.90, green: 0.38, blue: 0.38), primary: false) {
                     onAction(.deny(requestId: attention.request_id))
                 }
             }
@@ -802,7 +802,7 @@ struct IslandContentView: View {
             VStack(spacing: 10) {
                 FlowLayout(spacing: 8) {
                     ForEach(Array(attention.options.enumerated()), id: \.element) { idx, option in
-                        terminalButton(option, color: Color(red: 0.40, green: 0.65, blue: 0.90), primary: idx == 0) {
+                        terminalButton(option, color: Color(red: 0.50, green: 0.72, blue: 0.95), primary: idx == 0) {
                             onAction(.answerOption(requestId: attention.request_id, optionId: option))
                         }
                     }
@@ -820,16 +820,8 @@ struct IslandContentView: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 10)
                             .background(
-                                isFocused ? inputBlue.opacity(0.12) : Color.white.opacity(0.10),
+                                isFocused ? inputBlue.opacity(0.18) : Color.white.opacity(0.14),
                                 in: RoundedRectangle(cornerRadius: 3)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 3)
-                                    .strokeBorder(
-                                        isFocused ? inputBlue.opacity(0.70) : inputBlue.opacity(0.35),
-                                        style: Self.dashDotStyle
-                                    )
-                                    .allowsHitTesting(false)
                             )
                             .focused($focusedField, equals: attention.request_id)
                             .onHover { hovering in
@@ -892,27 +884,19 @@ private struct TerminalButtonView: View {
     let action: () -> Void
 
     private static let mono = Font.system(size: 13, weight: .regular, design: .monospaced)
-    private static let dashDotStyle = StrokeStyle(lineWidth: 1.5, dash: [6, 3, 2, 3])
 
     @State private var isHovered = false
 
     var body: some View {
         Text(label)
             .font(Self.mono)
-            .foregroundStyle(isHovered || primary ? color : color.opacity(0.70))
+            .foregroundStyle(isHovered || primary ? color : color.opacity(0.80))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .padding(.horizontal, 8)
             .background(
-                color.opacity(isHovered ? 0.30 : (primary ? 0.22 : 0.12)),
+                color.opacity(isHovered ? 0.35 : (primary ? 0.28 : 0.18)),
                 in: RoundedRectangle(cornerRadius: 3)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(
-                        color.opacity(isHovered ? 0.85 : (primary ? 0.70 : 0.40)),
-                        style: Self.dashDotStyle
-                    )
             )
             .contentShape(Rectangle())
             .onHover { hovering in
