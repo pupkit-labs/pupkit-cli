@@ -16,6 +16,8 @@ fn temp_config(name: &str) -> DaemonConfig {
     DaemonConfig {
         socket_path: root.join("pupkitd.sock"),
         state_path: root.join("daemon-state.json"),
+        pid_path: root.join("pupkitd.pid"),
+        shell_paused_path: root.join("shell-paused"),
         shell_binary_path: None,
     }
 }

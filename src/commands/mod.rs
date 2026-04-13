@@ -4,24 +4,31 @@ mod bridge;
 mod daemon;
 mod hook;
 mod monitor;
+mod service;
+mod shell;
 mod update;
 mod welcome;
 
 use action::ActionCommand;
 use bridge::BridgeSource;
+use daemon::DaemonCommand;
 use hook::HookCommand;
+use service::ServiceCommand;
+use shell::ShellCommand;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     match parse_command(&args)? {
         Command::Welcome { explicit } => welcome::execute(explicit),
         Command::Auth => auth::execute(),
         Command::Update => update::execute(),
-        Command::Daemon => daemon::execute(),
+        Command::Daemon(cmd) => daemon::execute(cmd),
         Command::Monitor => monitor::execute(),
         Command::HookInstall => hook::execute(HookCommand::Install),
         Command::HookDoctor => hook::execute(HookCommand::Doctor),
         Command::Bridge { source } => bridge::execute(source),
         Command::Action(command) => action::execute(command),
+        Command::Shell(cmd) => shell::execute(cmd),
+        Command::Service(cmd) => service::execute(cmd),
     }
 }
 
@@ -30,12 +37,14 @@ enum Command {
     Welcome { explicit: bool },
     Auth,
     Update,
-    Daemon,
+    Daemon(DaemonCommand),
     Monitor,
     HookInstall,
     HookDoctor,
     Bridge { source: BridgeSource },
     Action(ActionCommand),
+    Shell(ShellCommand),
+    Service(ServiceCommand),
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -62,13 +71,12 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
 {}",
             usage_text(&program_name(args))
         )),
-        Some("daemon") if args.len() == 2 => Ok(Command::Daemon),
-        Some("daemon") => Err(format!(
-            "daemon does not take additional arguments
-
-{}",
-            usage_text(&program_name(args))
-        )),
+        Some("daemon") => parse_daemon_command(args),
+        Some("shell") => parse_shell_command(args),
+        Some("start") if args.len() == 2 => Ok(Command::Service(ServiceCommand::Start)),
+        Some("stop") if args.len() == 2 => Ok(Command::Service(ServiceCommand::Stop)),
+        Some("restart") if args.len() == 2 => Ok(Command::Service(ServiceCommand::Restart)),
+        Some("status") if args.len() == 2 => Ok(Command::Service(ServiceCommand::Status)),
         Some("monitor") if args.len() == 2 => Ok(Command::Monitor),
         Some("monitor") => Err(format!(
             "monitor does not take additional arguments
@@ -83,6 +91,32 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
             "unsupported command: {other}
 
 {}",
+            usage_text(&program_name(args))
+        )),
+    }
+}
+
+fn parse_daemon_command(args: &[String]) -> Result<Command, String> {
+    match (args.get(2).map(String::as_str), args.len()) {
+        (None, _) | (Some("start"), 3) => Ok(Command::Daemon(DaemonCommand::Start)),
+        (Some("stop"), 3) => Ok(Command::Daemon(DaemonCommand::Stop)),
+        (Some("restart"), 3) => Ok(Command::Daemon(DaemonCommand::Restart)),
+        (Some("status"), 3) => Ok(Command::Daemon(DaemonCommand::Status)),
+        _ => Err(format!(
+            "daemon requires one of: start, stop, restart, status\n\n{}",
+            usage_text(&program_name(args))
+        )),
+    }
+}
+
+fn parse_shell_command(args: &[String]) -> Result<Command, String> {
+    match (args.get(2).map(String::as_str), args.len()) {
+        (None, _) | (Some("start"), 3) => Ok(Command::Shell(ShellCommand::Start)),
+        (Some("stop"), 3) => Ok(Command::Shell(ShellCommand::Stop)),
+        (Some("restart"), 3) => Ok(Command::Shell(ShellCommand::Restart)),
+        (Some("status"), 3) => Ok(Command::Shell(ShellCommand::Status)),
+        _ => Err(format!(
+            "shell requires one of: start, stop, restart, status\n\n{}",
             usage_text(&program_name(args))
         )),
     }
@@ -172,7 +206,10 @@ fn usage_text(program: &str) -> String {
     format!(
         "\
 Usage:
-  {program} [welcome|auth|update|daemon|monitor]
+  {program} [welcome|auth|update|monitor]
+  {program} start|stop|restart|status
+  {program} daemon [start|stop|restart|status]
+  {program} shell [start|stop|restart|status]
   {program} hook [install|doctor]
   {program} bridge [claude|codex] < input.json
   {program} action approve <request_id>
@@ -186,7 +223,7 @@ Usage:
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionCommand, BridgeSource, Command, parse_command};
+    use super::{ActionCommand, BridgeSource, Command, DaemonCommand, ServiceCommand, ShellCommand, parse_command};
 
     #[test]
     fn defaults_to_implicit_welcome_when_no_command_is_passed() {
@@ -255,6 +292,105 @@ mod tests {
                 request_id: "req-1".to_string(),
                 option_id: "yes".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn parses_daemon_start_command() {
+        let args = vec!["pup".to_string(), "daemon".to_string(), "start".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Daemon(DaemonCommand::Start)
+        );
+    }
+
+    #[test]
+    fn daemon_without_subcommand_defaults_to_start() {
+        let args = vec!["pup".to_string(), "daemon".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Daemon(DaemonCommand::Start)
+        );
+    }
+
+    #[test]
+    fn parses_daemon_stop_command() {
+        let args = vec!["pup".to_string(), "daemon".to_string(), "stop".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Daemon(DaemonCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn parses_daemon_status_command() {
+        let args = vec!["pup".to_string(), "daemon".to_string(), "status".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Daemon(DaemonCommand::Status)
+        );
+    }
+
+    #[test]
+    fn parses_shell_start_command() {
+        let args = vec!["pup".to_string(), "shell".to_string(), "start".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Shell(ShellCommand::Start)
+        );
+    }
+
+    #[test]
+    fn shell_without_subcommand_defaults_to_start() {
+        let args = vec!["pup".to_string(), "shell".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Shell(ShellCommand::Start)
+        );
+    }
+
+    #[test]
+    fn parses_shell_stop_command() {
+        let args = vec!["pup".to_string(), "shell".to_string(), "stop".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Shell(ShellCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn parses_top_level_start() {
+        let args = vec!["pup".to_string(), "start".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Service(ServiceCommand::Start)
+        );
+    }
+
+    #[test]
+    fn parses_top_level_stop() {
+        let args = vec!["pup".to_string(), "stop".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Service(ServiceCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn parses_top_level_restart() {
+        let args = vec!["pup".to_string(), "restart".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Service(ServiceCommand::Restart)
+        );
+    }
+
+    #[test]
+    fn parses_top_level_status() {
+        let args = vec!["pup".to_string(), "status".to_string()];
+        assert_eq!(
+            parse_command(&args).unwrap(),
+            Command::Service(ServiceCommand::Status)
         );
     }
 }

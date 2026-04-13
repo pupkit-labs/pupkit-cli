@@ -11,6 +11,8 @@ fn temp_config(name: &str) -> DaemonConfig {
     DaemonConfig {
         socket_path: root.join("d.sock"),
         state_path: root.join("state.json"),
+        pid_path: root.join("d.pid"),
+        shell_paused_path: root.join("shell-paused"),
         shell_binary_path: None,
     }
 }

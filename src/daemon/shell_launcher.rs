@@ -37,7 +37,7 @@ pub fn try_launch(binary_path: &Path) {
         return;
     }
 
-    if is_shell_running() {
+    if is_running() {
         eprintln!("[pupkit] PupkitShell already running; skipping launch");
         return;
     }
@@ -60,7 +60,7 @@ pub fn try_launch(binary_path: &Path) {
 }
 
 #[cfg(target_os = "macos")]
-fn is_shell_running() -> bool {
+pub fn is_running() -> bool {
     use std::process::{Command, Stdio};
     Command::new("pgrep")
         .args(["-x", "PupkitShell"])
@@ -70,6 +70,81 @@ fn is_shell_running() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_running() -> bool {
+    false
+}
+
+/// Spawns a background thread that periodically checks if PupkitShell is alive
+/// and relaunches it if it has exited. Respects the shell-paused marker file.
+#[cfg(target_os = "macos")]
+pub fn spawn_watchdog(binary_path: PathBuf) {
+    use std::thread;
+    use std::time::Duration;
+
+    let paused_path = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/pupkit/shell-paused"));
+
+    thread::Builder::new()
+        .name("shell-watchdog".into())
+        .spawn(move || {
+            // Wait a bit before first check to let initial launch settle
+            thread::sleep(Duration::from_secs(15));
+            loop {
+                thread::sleep(Duration::from_secs(10));
+                // Skip if user explicitly paused the shell
+                if paused_path.as_ref().is_some_and(|p| p.exists()) {
+                    continue;
+                }
+                if !is_running() {
+                    eprintln!("[pupkit] PupkitShell not running; watchdog restarting...");
+                    try_launch(&binary_path);
+                }
+            }
+        })
+        .ok();
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn spawn_watchdog(_binary_path: PathBuf) {}
+
+/// Stops all running PupkitShell processes.
+#[cfg(target_os = "macos")]
+pub fn stop_shell() -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    let output = Command::new("pgrep")
+        .args(["-x", "PupkitShell"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("pgrep failed: {e}"))?;
+
+    let pids: Vec<&str> = std::str::from_utf8(&output.stdout)
+        .unwrap_or("")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if pids.is_empty() {
+        return Err("PupkitShell is not running".to_string());
+    }
+
+    for pid in &pids {
+        let _ = Command::new("kill")
+            .arg(pid.trim())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn stop_shell() -> Result<(), String> {
+    Err("PupkitShell is only available on macOS".to_string())
 }
 
 #[cfg(target_os = "macos")]

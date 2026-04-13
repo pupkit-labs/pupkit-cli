@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.1 - 2026-04-13
+
+### Added / 新增
+
+- **Shell watchdog**: daemon now monitors PupkitShell and automatically restarts it if it exits. / **Shell 守护**：daemon 现在监控 PupkitShell，如果退出会自动重启。
+- **Daemon management**: `pupkit daemon [start|stop|restart|status]` subcommands for lifecycle control. / **Daemon 管理**：新增 `pupkit daemon [start|stop|restart|status]` 子命令用于生命周期控制。
+- **Shell management**: `pupkit shell [start|stop|restart|status]` subcommands for PupkitShell control. / **Shell 管理**：新增 `pupkit shell [start|stop|restart|status]` 子命令用于 PupkitShell 控制。
+- **Unified lifecycle**: `pupkit start|stop|restart|status` top-level commands manage daemon + shell together; `start` spawns daemon in background. / **统一生命周期**：新增 `pupkit start|stop|restart|status` 顶级命令，同时管理 daemon 和 shell；`start` 在后台启动 daemon。
+- **PID file**: daemon writes `~/.local/share/pupkit/pupkitd.pid` for reliable process management. / **PID 文件**：daemon 写入 PID 文件以支持可靠的进程管理。
+
+### Changed / 改进
+
+- `pupkit daemon` (no subcommand) is backward-compatible, equivalent to `pupkit daemon start`. / `pupkit daemon`（无子命令）向后兼容，等同于 `pupkit daemon start`。
+
 ## 1.0.0 - 2026-04-13
 
 ### Added / 新增

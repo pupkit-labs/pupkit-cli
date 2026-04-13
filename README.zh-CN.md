@@ -18,7 +18,9 @@
 
 - `pupkit` —— 欢迎页 + 后台自动启动 daemon
 - `pupkit welcome` —— 显式渲染欢迎页
-- `pupkit daemon` —— 后台服务，追踪 AI 会话 + 启动 PupkitShell
+- `pupkit start|stop|restart|status` —— 统一服务生命周期管理（daemon + shell）
+- `pupkit daemon [start|stop|restart|status]` —— 单独管理 daemon
+- `pupkit shell [start|stop|restart|status]` —— 单独管理 PupkitShell（仅 macOS）
 - `pupkit auth` —— GitHub 设备流认证
 - `pupkit update` —— 自更新（macOS 同时更新 PupkitShell）
 
@@ -111,11 +113,25 @@ pupkit
 pupkit welcome
 ```
 
-手动启动 daemon（如果需要）：
+### 服务管理
+
+一键管理 daemon + PupkitShell：
 
 ```sh
-pupkit daemon
+pupkit start     # 后台启动 daemon + shell
+pupkit stop      # 停止 daemon + shell
+pupkit restart   # 重启
+pupkit status    # 查看运行状态
 ```
+
+也可以单独管理 daemon 或 shell：
+
+```sh
+pupkit daemon start|stop|restart|status
+pupkit shell start|stop|restart|status
+```
+
+> **注意**：从 macOS 菜单栏点击 PupkitShell 退出时，daemon 也会一起停止。使用 `pupkit start` 可以重新启动。
 
 如果你需要重新刷新 GitHub 认证，用来获取 Copilot 配额：
 
@@ -131,6 +147,38 @@ pupkit update
 
 ## 命令 🧭
 
+### `start` / `stop` / `restart` / `status`
+
+pupkit 服务的统一生命周期管理（daemon + PupkitShell）。
+
+- `pupkit start` —— 后台启动 daemon；macOS 上同时启动 PupkitShell 并开启守护
+- `pupkit stop` —— 停止 daemon 和 PupkitShell
+- `pupkit restart` —— 重启
+- `pupkit status` —— 查看 daemon 和 shell 运行状态
+
+### `daemon [start|stop|restart|status]`
+
+单独管理后台 daemon。daemon 的功能：
+
+- 绑定 Unix socket 到 `~/.local/share/pupkit/pupkitd.sock`
+- 写入 PID 文件到 `~/.local/share/pupkit/pupkitd.pid`
+- 监听 Claude Code、Codex、Copilot 的 JSONL 文件以发现会话活动
+- 接收来自 AI 工具 hook 的 bridge 事件
+- 在 macOS 上自动发现并启动 **PupkitShell**（灵动岛叠加层）
+- 运行**守护线程**，PupkitShell 崩溃后每 10s 检测并自动重启
+- 如果 PupkitShell 本地不存在，会从最新 GitHub Release 自动下载
+
+`pupkit daemon`（无子命令）等同于 `pupkit daemon start`（前台运行）。
+
+### `shell [start|stop|restart|status]`（仅 macOS）
+
+单独管理 PupkitShell：
+
+- `pupkit shell start` —— 启动 PupkitShell 并重新启用守护线程
+- `pupkit shell stop` —— 停止 PupkitShell 并暂停守护线程（不会自动重启）
+- `pupkit shell restart` —— 重启 PupkitShell
+- `pupkit shell status` —— 查看 PupkitShell 是否在运行
+
 ### `welcome`
 
 渲染主欢迎页。
@@ -143,18 +191,6 @@ pupkit update
 - Claude、Codex、Copilot 的 AI Quick Look
 
 同时会在后台自动启动 daemon（如果尚未运行）。
-
-### `daemon`
-
-启动后台服务，追踪 AI 编码会话。daemon 的功能：
-
-- 绑定 Unix socket 到 `~/.local/share/pupkit/pupkitd.sock`
-- 监听 Claude Code、Codex、Copilot 的 JSONL 文件以发现会话活动
-- 接收来自 AI 工具 hook 的 bridge 事件
-- 在 macOS 上自动发现并启动 **PupkitShell**（灵动岛叠加层）
-- 如果 PupkitShell 本地不存在，会从最新 GitHub Release 自动下载
-
-当已有 daemon 在运行时，再次执行 `pupkit daemon` 会报错退出（socket 冲突检测）。
 
 ### `auth`
 

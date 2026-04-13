@@ -18,7 +18,9 @@ The current product surface:
 
 - `pupkit` — welcome screen + auto-starts daemon in background
 - `pupkit welcome` — explicit welcome screen
-- `pupkit daemon` — background service for AI session tracking + PupkitShell
+- `pupkit start|stop|restart|status` — unified service lifecycle (daemon + shell)
+- `pupkit daemon [start|stop|restart|status]` — daemon-only management
+- `pupkit shell [start|stop|restart|status]` — PupkitShell-only management (macOS)
 - `pupkit auth` — GitHub device flow for Copilot quota
 - `pupkit update` — self-update (includes PupkitShell on macOS)
 
@@ -111,11 +113,25 @@ Or explicitly:
 pupkit welcome
 ```
 
-Start the daemon manually (if needed):
+### Service Management
+
+Start or stop everything (daemon + PupkitShell) at once:
 
 ```sh
-pupkit daemon
+pupkit start     # start daemon in background + shell
+pupkit stop      # stop daemon + shell
+pupkit restart   # restart both
+pupkit status    # show running state
 ```
+
+Manage daemon and shell individually:
+
+```sh
+pupkit daemon start|stop|restart|status
+pupkit shell start|stop|restart|status
+```
+
+> **Note**: Quitting PupkitShell from the macOS menu bar stops both shell and daemon. Use `pupkit start` to bring them back.
 
 If you need to refresh GitHub authentication for Copilot quota lookup:
 
@@ -131,6 +147,38 @@ pupkit update
 
 ## Commands 🧭
 
+### `start` / `stop` / `restart` / `status`
+
+Unified lifecycle management for the entire pupkit service (daemon + PupkitShell).
+
+- `pupkit start` — starts daemon in background; on macOS also launches PupkitShell with watchdog
+- `pupkit stop` — stops both daemon and PupkitShell
+- `pupkit restart` — restarts both
+- `pupkit status` — shows running status of daemon and shell
+
+### `daemon [start|stop|restart|status]`
+
+Manage the background daemon independently. The daemon:
+
+- Binds a Unix socket at `~/.local/share/pupkit/pupkitd.sock`
+- Writes PID to `~/.local/share/pupkit/pupkitd.pid`
+- Watches JSONL files from Claude Code, Codex, and Copilot for session activity
+- Receives bridge events from AI tool hooks
+- On macOS, auto-discovers and launches **PupkitShell** (Dynamic Island overlay)
+- Runs a **watchdog thread** that restarts PupkitShell if it crashes (checks every 10s)
+- If PupkitShell is not found locally, downloads it from the latest GitHub release
+
+`pupkit daemon` (no subcommand) is equivalent to `pupkit daemon start` (runs in foreground).
+
+### `shell [start|stop|restart|status]` (macOS only)
+
+Manage PupkitShell independently:
+
+- `pupkit shell start` — launches PupkitShell and re-enables the daemon watchdog
+- `pupkit shell stop` — stops PupkitShell and pauses the watchdog (won't auto-restart)
+- `pupkit shell restart` — restarts PupkitShell
+- `pupkit shell status` — shows whether PupkitShell is running
+
 ### `welcome`
 
 Render the main welcome screen.
@@ -143,18 +191,6 @@ This includes:
 - AI Quick Look for Claude, Codex, and Copilot
 
 Also auto-starts the daemon in background if not already running.
-
-### `daemon`
-
-Start the background service that tracks AI coding sessions. The daemon:
-
-- Binds a Unix socket at `~/.local/share/pupkit/pupkitd.sock`
-- Watches JSONL files from Claude Code, Codex, and Copilot for session activity
-- Receives bridge events from AI tool hooks
-- On macOS, auto-discovers and launches **PupkitShell** (Dynamic Island overlay)
-- If PupkitShell is not found locally, downloads it from the latest GitHub release
-
-Running `pupkit daemon` when one is already active exits with an error (socket conflict detection).
 
 ### `auth`
 

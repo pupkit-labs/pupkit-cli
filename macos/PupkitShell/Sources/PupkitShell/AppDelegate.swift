@@ -27,6 +27,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let pupkitDir = home.appendingPathComponent(".local/share/pupkit")
+
+        // Write shell-paused marker so watchdog won't restart during shutdown
+        let marker = pupkitDir.appendingPathComponent("shell-paused")
+        FileManager.default.createFile(atPath: marker.path, contents: nil)
+
+        // Also stop the daemon process
+        let pidFile = pupkitDir.appendingPathComponent("pupkitd.pid")
+        if let pidString = try? String(contentsOf: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           let pid = Int32(pidString) {
+            kill(pid, SIGTERM)
+        }
     }
 
     private func refreshState() async {

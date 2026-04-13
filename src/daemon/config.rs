@@ -5,6 +5,8 @@ use std::path::PathBuf;
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub state_path: PathBuf,
+    pub pid_path: PathBuf,
+    pub shell_paused_path: PathBuf,
     pub shell_binary_path: Option<PathBuf>,
 }
 
@@ -14,6 +16,8 @@ impl DaemonConfig {
         Self {
             socket_path: home.join(".local/share/pupkit/pupkitd.sock"),
             state_path: home.join(".local/share/pupkit/daemon-state.json"),
+            pid_path: home.join(".local/share/pupkit/pupkitd.pid"),
+            shell_paused_path: home.join(".local/share/pupkit/shell-paused"),
             shell_binary_path: resolve_shell_binary(),
         }
     }
@@ -62,6 +66,10 @@ mod tests {
         assert_eq!(
             config.state_path,
             PathBuf::from("/tmp/demo-home/.local/share/pupkit/daemon-state.json")
+        );
+        assert_eq!(
+            config.pid_path,
+            PathBuf::from("/tmp/demo-home/.local/share/pupkit/pupkitd.pid")
         );
     }
 
