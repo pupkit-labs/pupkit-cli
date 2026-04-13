@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -156,41 +155,14 @@ fn should_render_welcome(explicit: bool, can_render: bool) -> bool {
     explicit || can_render
 }
 
-/// If the daemon is not running, spawn `pupkit daemon` as a detached background process.
+/// If the daemon is not running, spawn it via the shared lifecycle helper
+/// so the PID file and shell-paused marker are properly managed.
 fn ensure_daemon_running() {
-    use std::path::PathBuf;
-    use std::process::{Command, Stdio};
-
-    let home = match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h),
-        None => return,
-    };
-    let socket_path = home.join(".local/share/pupkit/pupkitd.sock");
-
-    // Quick check: can we connect to the existing socket?
-    if socket_path.exists() && UnixStream::connect(&socket_path).is_ok() {
-        return; // daemon already running
+    let (running, _) = super::daemon::daemon_status();
+    if running {
+        return;
     }
-
-    // Resolve the current executable to spawn daemon
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    match Command::new(&exe)
-        .arg("daemon")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => {
-            eprintln!("[pupkit] daemon started in background (pid: {})", child.id());
-            std::mem::forget(child);
-        }
-        Err(_) => {} // silently ignore — daemon is nice-to-have
-    }
+    let _ = super::daemon::spawn_daemon_background();
 }
 
 #[cfg(test)]

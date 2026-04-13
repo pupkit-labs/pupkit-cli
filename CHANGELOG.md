@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.2 - 2026-04-13
+
+### Fixed / 修复
+
+- **Duplicate daemon on brew upgrade**: `ensure_daemon_running()` now uses the shared lifecycle helper (`spawn_daemon_background`), so it writes PID files and coordinates with `pupkit stop/status`. Previously, opening a new terminal after `brew upgrade` could leave two daemon processes. / **brew 升级后重复 daemon**：`ensure_daemon_running()` 现在使用统一的生命周期管理（`spawn_daemon_background`），正确写入 PID 文件并与 `pupkit stop/status` 协调。之前在 `brew upgrade` 后打开新终端可能导致两个 daemon 并存。
+
 ## 1.0.1 - 2026-04-13
 
 ### Added / 新增
