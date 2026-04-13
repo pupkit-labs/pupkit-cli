@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.3 - 2026-04-13
+
+### Added / 新增
+
+- **Terminal.app support for approval injection**: TTY keystroke injection now supports both iTerm2 and Terminal.app. Clicking Allow/Deny in the Dynamic Island now works in macOS default Terminal, not just iTerm2. / **Terminal.app 审批注入支持**：TTY 按键注入现在同时支持 iTerm2 和 Terminal.app。在灵动岛中点击允许/拒绝按钮现在在 macOS 默认终端中也能正常工作。
+
 ## 1.0.2 - 2026-04-13
 
 ### Fixed / 修复

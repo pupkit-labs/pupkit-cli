@@ -3,6 +3,8 @@
 //! When the watcher detects a Copilot `ask_user` tool call, we discover the
 //! process's controlling TTY. When the user clicks an option in the Dynamic
 //! Island, we inject arrow-key sequences into the TTY to select the answer.
+//!
+//! Supports iTerm2 (preferred) and Terminal.app as injection backends.
 
 use std::collections::HashMap;
 use std::fs;
@@ -10,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::protocol::{SessionId, SourceKind};
+use crate::log_warn;
 
 /// Stores TTY paths and choice lists for active tool-approval prompts.
 ///
@@ -65,7 +68,6 @@ impl CopilotTtyStore {
                     .map_err(|e| format!("TTY inject failed: {e}"))?;
             }
             SourceKind::Codex => {
-                // Codex uses a ratatui TUI with selectable options (like Copilot)
                 let choice_index = entry
                     .choices
                     .iter()
@@ -271,57 +273,99 @@ fn find_tty_for_pid(pid: u32) -> Option<PathBuf> {
 
 // MARK: - Keystroke Injection
 
-/// Inject a simple text string followed by Enter into an iTerm2 session.
-/// Used for Claude Code / Codex y/n approval prompts.
-fn inject_text(tty_path: &Path, text: &str) -> std::io::Result<()> {
-    let tty_str = tty_path.to_string_lossy();
-    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-    // `write text` appends a newline (= pressing Enter) by default
-    let script = format!(
-        r#"tell application "iTerm2"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with s in sessions of t
-                if tty of s is "{tty}" then
-                    tell s to write text "{text}"
-                    return "ok"
-                end if
-            end repeat
-        end repeat
-    end repeat
-    return "session not found"
-end tell"#,
-        tty = tty_str,
-        text = escaped,
-    );
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()?;
-
-    let result = String::from_utf8_lossy(&output.stdout);
-    if result.trim() != "ok" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("iTerm2 session not found for {tty_str}: {result}"),
-        ));
-    }
-    Ok(())
+/// Which terminal emulator to target for keystroke injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalKind {
+    ITerm2,
+    TerminalApp,
 }
 
-/// Inject a choice selection via osascript + iTerm2.
+/// Detect which terminal emulators are currently running.
+fn detect_running_terminals() -> Vec<TerminalKind> {
+    let mut terminals = Vec::new();
+    for (name, kind) in &[("iTerm2", TerminalKind::ITerm2), ("Terminal", TerminalKind::TerminalApp)] {
+        if Command::new("pgrep")
+            .args(["-x", name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            terminals.push(*kind);
+        }
+    }
+    terminals
+}
+
+/// Inject a choice selection via the first available terminal backend.
 ///
-/// Direct TTY writes go to the output side, not input. On macOS 15+, TIOCSTI
-/// is blocked. So we use iTerm2's AppleScript API to send keystrokes to the
-/// specific session identified by its TTY device path.
-///
-/// The Copilot `ask_user` TUI starts with the first option selected (index 0).
+/// Tries iTerm2 first (richer API), then Terminal.app via System Events.
+/// The TUI starts with the first option selected (index 0).
 /// To select option N, we send N down-arrow sequences, then Enter.
 fn inject_choice(tty_path: &Path, choice_index: usize) -> std::io::Result<()> {
+    let terminals = detect_running_terminals();
+    let mut last_err = None;
+
+    for terminal in &terminals {
+        match terminal {
+            TerminalKind::ITerm2 => {
+                match inject_choice_iterm2(tty_path, choice_index) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            TerminalKind::TerminalApp => {
+                match inject_choice_terminal_app(tty_path, choice_index) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no supported terminal emulator running (iTerm2 or Terminal.app required)",
+    )))
+}
+
+/// Inject freeform text by navigating past all choices to the text input area,
+/// typing the text, then pressing Enter.
+fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
+    let terminals = detect_running_terminals();
+    let mut last_err = None;
+
+    for terminal in &terminals {
+        match terminal {
+            TerminalKind::ITerm2 => {
+                match inject_freeform_iterm2(tty_path, num_choices, text) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            TerminalKind::TerminalApp => {
+                match inject_freeform_terminal_app(tty_path, num_choices, text) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no supported terminal emulator running (iTerm2 or Terminal.app required)",
+    )))
+}
+
+// MARK: - iTerm2 Backend
+
+/// Inject a choice selection via iTerm2's AppleScript API.
+fn inject_choice_iterm2(tty_path: &Path, choice_index: usize) -> std::io::Result<()> {
     let tty_str = tty_path.to_string_lossy();
 
-    // Build the AppleScript to send keystrokes to the right iTerm2 session
     let mut arrow_commands = String::new();
     for _ in 0..choice_index {
         arrow_commands.push_str(
@@ -348,32 +392,14 @@ end tell"#,
         arrows = arrow_commands,
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()?;
-
-    let result = String::from_utf8_lossy(&output.stdout);
-    if result.trim() != "ok" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("iTerm2 session not found for {tty_str}: {result}"),
-        ));
-    }
-
-    Ok(())
+    run_osascript_expect_ok(&script, &tty_str, "iTerm2")
 }
 
-/// Inject freeform text by navigating past all choices to the text input area,
-/// typing the text, then pressing Enter.
-///
-/// In Copilot's ask_user TUI, the freeform input is below the choices list.
-/// We need `num_choices` down-arrows to get past all options to the text field.
-fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
+/// Inject freeform text via iTerm2's AppleScript API.
+fn inject_freeform_iterm2(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
     let tty_str = tty_path.to_string_lossy();
+    let escaped_text = text.replace('\\', "\\\\").replace('"', "\\\"");
 
-    // Send num_choices down-arrows to reach the freeform input option (last item).
-    // In a non-wrapping list, this saturates at the bottom from any starting position.
     let mut arrow_commands = String::new();
     for _ in 0..num_choices {
         arrow_commands.push_str(
@@ -381,9 +407,6 @@ fn inject_freeform_text(tty_path: &Path, num_choices: usize, text: &str) -> std:
              \x20                   delay 0.05\n",
         );
     }
-
-    // Escape the text for AppleScript string (double any backslashes and quotes)
-    let escaped_text = text.replace('\\', "\\\\").replace('"', "\\\"");
 
     let script = format!(
         r#"tell application "iTerm2"
@@ -409,20 +432,138 @@ end tell"#,
         text = escaped_text,
     );
 
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()?;
+    run_osascript_expect_ok(&script, &tty_str, "iTerm2")
+}
 
-    let result = String::from_utf8_lossy(&output.stdout);
-    if result.trim() != "ok" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("iTerm2 session not found for {tty_str}: {result}"),
-        ));
+// MARK: - Terminal.app Backend
+
+/// Inject a choice selection via Terminal.app + System Events.
+///
+/// Terminal.app doesn't support direct text injection into a session.
+/// We find the window/tab by TTY path, bring it to front, then use
+/// System Events to send arrow key codes and `keystroke return`.
+///
+/// NOTE: `keystroke return` is required instead of `key code 36` because
+/// terminal TUI frameworks (inquirer/crossterm) don't respond to raw
+/// key-code events — they need the character-level Return event.
+fn inject_choice_terminal_app(tty_path: &Path, choice_index: usize) -> std::io::Result<()> {
+    let tty_str = tty_path.to_string_lossy();
+
+    let mut key_commands = String::new();
+    for _ in 0..choice_index {
+        key_commands.push_str(
+            "                            key code 125\n\
+             \x20                           delay 0.05\n",
+        );
     }
 
-    Ok(())
+    let script = format!(
+        r#"tell application "Terminal"
+    activate
+    repeat with w in windows
+        set tabCount to count of tabs of w
+        repeat with i from 1 to tabCount
+            set t to tab i of w
+            if tty of t is "{tty}" then
+                set selected tab of w to t
+                set frontmost of w to true
+                delay 0.3
+                tell application "System Events"
+                    tell process "Terminal"
+{keys}                            keystroke return
+                    end tell
+                end tell
+                return "ok"
+            end if
+        end repeat
+    end repeat
+    return "session not found"
+end tell"#,
+        tty = tty_str,
+        keys = key_commands,
+    );
+
+    run_osascript_expect_ok(&script, &tty_str, "Terminal.app")
+}
+
+/// Inject freeform text via Terminal.app + System Events.
+///
+/// Uses clipboard paste (Cmd+V) for the text content because AppleScript's
+/// `keystroke` doesn't support non-ASCII characters (Chinese, Japanese, etc.).
+/// The original clipboard content is saved and restored after pasting.
+fn inject_freeform_terminal_app(tty_path: &Path, num_choices: usize, text: &str) -> std::io::Result<()> {
+    let tty_str = tty_path.to_string_lossy();
+    let escaped_text = text.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let mut arrow_commands = String::new();
+    for _ in 0..num_choices {
+        arrow_commands.push_str(
+            "                            key code 125\n\
+             \x20                           delay 0.05\n",
+        );
+    }
+
+    let script = format!(
+        r#"-- Save clipboard, paste text, restore clipboard
+set oldClip to the clipboard
+set the clipboard to "{text}"
+tell application "Terminal"
+    activate
+    repeat with w in windows
+        set tabCount to count of tabs of w
+        repeat with i from 1 to tabCount
+            set t to tab i of w
+            if tty of t is "{tty}" then
+                set selected tab of w to t
+                set frontmost of w to true
+                delay 0.3
+                tell application "System Events"
+                    tell process "Terminal"
+{arrows}                            delay 0.1
+                            keystroke return
+                            delay 0.15
+                            keystroke "v" using command down
+                            delay 0.05
+                            keystroke return
+                    end tell
+                end tell
+                set the clipboard to oldClip
+                return "ok"
+            end if
+        end repeat
+    end repeat
+    return "session not found"
+end tell"#,
+        tty = tty_str,
+        arrows = arrow_commands,
+        text = escaped_text,
+    );
+
+    run_osascript_expect_ok(&script, &tty_str, "Terminal.app")
+}
+
+// MARK: - Shared Helpers
+
+/// Run an AppleScript and expect "ok" as the return value.
+fn run_osascript_expect_ok(script: &str, tty_str: &str, terminal_name: &str) -> std::io::Result<()> {
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()?;
+
+    let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        log_warn!("[tty] osascript stderr for {terminal_name}: {stderr}");
+    }
+    if result == "ok" {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{terminal_name} session not found for {tty_str}: {result}"),
+        ))
+    }
 }
 
 // MARK: - Tests
